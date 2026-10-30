@@ -16,8 +16,11 @@ The first pass, `scan`, walks a recording and reports every string stored in it,
 inline in events and inside constant pools.
 
 ```
-jfr-redact scan [--top <n>] [--out <file.tsv>] [--validate] <recording.jfr>
+jfr-redact scan [--top <n>] [--table] [--out <file.tsv>] [--validate] <recording.jfr>
 ```
+
+`scripts/demo.sh <recording.jfr> [n]` shows the top strings as a table, using the native image if built, otherwise
+the jar.
 
 ## How it works
 

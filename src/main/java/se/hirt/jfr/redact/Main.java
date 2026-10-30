@@ -51,10 +51,18 @@ public final class Main {
 
 			Options:
 			  --top <n>      Number of strings to print, sorted by occurrences (default 20, 0 for none)
+			  --table        Print the strings as a terminal friendly table: the string in ASCII, cropped
+			                 to 40 characters, its length, its total number of occurrences and how many of
+			                 those are inlined in events. Characters outside printable ASCII are shown
+			                 as ~, and the empty string as <EMPTY>
 			  --out <file>   Write all strings to a tab separated file: inline, constant pool, string
 			  --validate     Decode all events, also those that cannot contain strings, and verify that
 			                 every event decodes to its declared size
 			""";
+
+	private static final int TABLE_STRING_WIDTH = 40;
+	private static final String ELLIPSIS = "...";
+	private static final char NON_ASCII_MARKER = '~';
 
 	private Main() {
 	}
@@ -76,12 +84,14 @@ public final class Main {
 		int top = 20;
 		Path outFile = null;
 		boolean validate = false;
+		boolean table = false;
 		Path recording = null;
 		for (int i = 1; i < args.length; i++) {
 			switch (args[i]) {
 			case "--top" -> top = Integer.parseInt(requireValue(args, ++i));
 			case "--out" -> outFile = Path.of(requireValue(args, ++i));
 			case "--validate" -> validate = true;
+			case "--table" -> table = true;
 			default -> {
 				if (args[i].startsWith("-") || recording != null) {
 					err.println("Unexpected argument: " + args[i]);
@@ -106,7 +116,11 @@ public final class Main {
 		StringCountMap strings = scanner.getStrings();
 		Integer[] sorted = sortByOccurrences(strings);
 		if (top > 0) {
-			printTop(out, strings, sorted, top);
+			if (table) {
+				printTable(out, strings, sorted, top);
+			} else {
+				printTop(out, strings, sorted, top);
+			}
 		}
 		if (outFile != null) {
 			writeTsv(outFile, strings, sorted);
@@ -163,6 +177,48 @@ public final class Main {
 			out.printf("%,12d %,12d  %s%n", strings.getCount(e, StringScanner.INLINE),
 					strings.getCount(e, StringScanner.CONSTANT_POOL), escape(strings.getString(e)));
 		}
+	}
+
+	private static void printTable(PrintStream out, StringCountMap strings, Integer[] sorted, int top) {
+		String format = "%-" + TABLE_STRING_WIDTH + "s %10s %12s %12s%n";
+		out.println();
+		out.printf(format, "String", "Length", "Occurrences", "Inlined");
+		out.printf(format, "-".repeat(TABLE_STRING_WIDTH), "-".repeat(10), "-".repeat(12), "-".repeat(12));
+		int shown = Math.min(top, sorted.length);
+		for (int i = 0; i < shown; i++) {
+			int e = sorted[i];
+			String s = strings.getString(e);
+			out.printf(format, toTableCell(s), String.format("%,d", s.codePointCount(0, s.length())),
+					String.format("%,d", strings.getTotalCount(e)),
+					String.format("%,d", strings.getCount(e, StringScanner.INLINE)));
+		}
+		out.println();
+		if (shown == sorted.length) {
+			out.printf("Showing all %,d strings, most common first.%n", sorted.length);
+		} else {
+			out.printf("Showing the top %,d most common strings of %,d.%n", shown, sorted.length);
+		}
+	}
+
+	/**
+	 * Renders the string in printable ASCII, cropped with an ellipsis to fit the table column.
+	 */
+	static String toTableCell(String s) {
+		if (s.isEmpty()) {
+			return "<EMPTY>";
+		}
+		StringBuilder sb = new StringBuilder(TABLE_STRING_WIDTH);
+		int codePoints = s.codePointCount(0, s.length());
+		int visible = codePoints <= TABLE_STRING_WIDTH ? codePoints : TABLE_STRING_WIDTH - ELLIPSIS.length();
+		for (int i = 0, n = 0; n < visible; n++) {
+			int c = s.codePointAt(i);
+			sb.append(c >= 0x20 && c < 0x7F ? (char) c : NON_ASCII_MARKER);
+			i += Character.charCount(c);
+		}
+		if (visible < codePoints) {
+			sb.append(ELLIPSIS);
+		}
+		return sb.toString();
 	}
 
 	private static void writeTsv(Path file, StringCountMap strings, Integer[] sorted) throws IOException {
