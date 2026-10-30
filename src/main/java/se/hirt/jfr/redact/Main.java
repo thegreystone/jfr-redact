@@ -52,10 +52,14 @@ public final class Main {
 			Options:
 			  --top <n>      Number of strings to print, sorted by occurrences (default 20, 0 for none)
 			  --table        Print the strings as a terminal friendly table: the string in ASCII, cropped
-			                 to 40 characters, its length, its total number of occurrences and how many of
-			                 those are inlined in events. Characters outside printable ASCII are shown
-			                 as ~, and the empty string as <EMPTY>
-			  --out <file>   Write all strings to a tab separated file: inline, constant pool, string
+			                 to 40 characters, its length, its total number of occurrences, how many of
+			                 those are inlined in events, and the references to the constants containing
+			                 it. Characters outside printable ASCII are shown as ~, and the empty string
+			                 as <EMPTY>. Implies --references
+			  --references   Also count the direct references to the constants containing each string,
+			                 from events and from other constants. Decodes nearly all events, so slower
+			  --out <file>   Write all strings to a tab separated file: inline, constant pool,
+			                 references (if counted), string
 			  --validate     Decode all events, also those that cannot contain strings, and verify that
 			                 every event decodes to its declared size
 			""";
@@ -85,6 +89,7 @@ public final class Main {
 		Path outFile = null;
 		boolean validate = false;
 		boolean table = false;
+		boolean references = false;
 		Path recording = null;
 		for (int i = 1; i < args.length; i++) {
 			switch (args[i]) {
@@ -92,6 +97,7 @@ public final class Main {
 			case "--out" -> outFile = Path.of(requireValue(args, ++i));
 			case "--validate" -> validate = true;
 			case "--table" -> table = true;
+			case "--references" -> references = true;
 			default -> {
 				if (args[i].startsWith("-") || recording != null) {
 					err.println("Unexpected argument: " + args[i]);
@@ -108,7 +114,7 @@ public final class Main {
 		}
 
 		long start = System.nanoTime();
-		StringScanner scanner = new StringScanner(validate);
+		StringScanner scanner = new StringScanner(validate, references || table);
 		new StreamingChunkParser().parse(recording, scanner);
 		long elapsedNanos = System.nanoTime() - start;
 
@@ -123,7 +129,7 @@ public final class Main {
 			}
 		}
 		if (outFile != null) {
-			writeTsv(outFile, strings, sorted);
+			writeTsv(outFile, strings, sorted, scanner.isCountingReferences());
 			out.println("Wrote " + strings.size() + " strings to " + outFile);
 		}
 		if (validate && scanner.getMisalignedCount() > 0) {
@@ -153,6 +159,10 @@ public final class Main {
 		out.printf("Strings: %,d unique, %,d inline, %,d in constant pools, %,d constant pool references%n",
 				scanner.getStrings().size(), scanner.getOccurrenceCount(StringScanner.INLINE),
 				scanner.getOccurrenceCount(StringScanner.CONSTANT_POOL), scanner.getConstantPoolReferenceCount());
+		if (scanner.isCountingReferences()) {
+			out.printf("References: %,d to constants containing strings (%,d unresolved)%n",
+					scanner.getReferenceCount(), scanner.getUnresolvedReferenceCount());
+		}
 		if (scanner.getUnknownEventCount() > 0) {
 			out.printf("Warning: %,d events of undeclared types were skipped%n", scanner.getUnknownEventCount());
 		}
@@ -180,17 +190,19 @@ public final class Main {
 	}
 
 	private static void printTable(PrintStream out, StringCountMap strings, Integer[] sorted, int top) {
-		String format = "%-" + TABLE_STRING_WIDTH + "s %10s %12s %12s%n";
+		String format = "%-" + TABLE_STRING_WIDTH + "s %10s %12s %12s %12s%n";
 		out.println();
-		out.printf(format, "String", "Length", "Occurrences", "Inlined");
-		out.printf(format, "-".repeat(TABLE_STRING_WIDTH), "-".repeat(10), "-".repeat(12), "-".repeat(12));
+		out.printf(format, "String", "Length", "Occurrences", "Inlined", "References");
+		out.printf(format, "-".repeat(TABLE_STRING_WIDTH), "-".repeat(10), "-".repeat(12), "-".repeat(12),
+				"-".repeat(12));
 		int shown = Math.min(top, sorted.length);
 		for (int i = 0; i < shown; i++) {
 			int e = sorted[i];
 			String s = strings.getString(e);
 			out.printf(format, toTableCell(s), String.format("%,d", s.codePointCount(0, s.length())),
 					String.format("%,d", strings.getTotalCount(e)),
-					String.format("%,d", strings.getCount(e, StringScanner.INLINE)));
+					String.format("%,d", strings.getCount(e, StringScanner.INLINE)),
+					String.format("%,d", strings.getReferenceCount(e)));
 		}
 		out.println();
 		if (shown == sorted.length) {
@@ -221,14 +233,19 @@ public final class Main {
 		return sb.toString();
 	}
 
-	private static void writeTsv(Path file, StringCountMap strings, Integer[] sorted) throws IOException {
+	private static void writeTsv(Path file, StringCountMap strings, Integer[] sorted, boolean references)
+			throws IOException {
 		try (Writer writer = new BufferedWriter(Files.newBufferedWriter(file, StandardCharsets.UTF_8), 1 << 16)) {
-			writer.write("inline\tconstantPool\tstring\n");
+			writer.write(references ? "inline\tconstantPool\treferences\tstring\n" : "inline\tconstantPool\tstring\n");
 			for (int e : sorted) {
 				writer.write(Long.toString(strings.getCount(e, StringScanner.INLINE)));
 				writer.write('\t');
 				writer.write(Long.toString(strings.getCount(e, StringScanner.CONSTANT_POOL)));
 				writer.write('\t');
+				if (references) {
+					writer.write(Long.toString(strings.getReferenceCount(e)));
+					writer.write('\t');
+				}
 				writer.write(escape(strings.getString(e)));
 				writer.write('\n');
 			}

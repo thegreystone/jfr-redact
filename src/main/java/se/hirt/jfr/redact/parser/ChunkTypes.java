@@ -30,6 +30,7 @@ package se.hirt.jfr.redact.parser;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,6 +62,12 @@ public final class ChunkTypes {
 	public static final int KIND_UTF8 = 7;
 	/** JFR 0.9 string: int char count followed by UTF-16 */
 	public static final int KIND_UTF16 = 8;
+	/**
+	 * Reference to a constant that contains strings, only used in {@link Type#referenceFields}. The
+	 * type index of the constant pool is in the upper bits, and the key is encoded as the pool's
+	 * {@link Type#keyKind}.
+	 */
+	public static final int KIND_REF = 9;
 	public static final int KIND_MASK = 0xF;
 	public static final int ARRAY_FLAG = 0x10;
 	public static final int TYPE_SHIFT = 5;
@@ -80,6 +87,15 @@ public final class ChunkTypes {
 		public int[] fields;
 		/** True if a value of this type can contain an inlined (not constant pool referenced) string */
 		public boolean containsStrings;
+		/**
+		 * Like {@link #fields}, but with references to constants that contain strings encoded as
+		 * {@link ChunkTypes#KIND_REF}. Only set after {@link ChunkTypes#prepareReferences()}.
+		 */
+		public int[] referenceFields;
+		/** True if a value of this type can contain a reference to a constant containing strings */
+		public boolean containsReferences;
+		/** Per field, the type index of the referenced constant pool, or -1. Null if no references. */
+		int[] refTargets;
 
 		Type(int index, long id, String name, boolean isString, int keyKind) {
 			this.index = index;
@@ -92,11 +108,14 @@ public final class ChunkTypes {
 
 	/** JFR 0.9, with fixed width integers and array lengths */
 	public final boolean legacy;
+	/** The index of the {@value #STRING_TYPE} type, or -1 if not declared */
+	public final int stringTypeIndex;
 	private final Type[] types;
 	private final IdLookup eventTypes;
 	/** The event type lookup array, if dense, to keep the per event lookup cheap */
 	private final Type[] denseEventTypes;
 	private final IdLookup poolTypes;
+	private boolean referencesPrepared;
 
 	ChunkTypes(boolean legacy, List<Type> types, List<Type> eventTypes, List<Type> poolTypes) {
 		this.legacy = legacy;
@@ -104,7 +123,27 @@ public final class ChunkTypes {
 		this.eventTypes = new IdLookup(eventTypes);
 		this.denseEventTypes = this.eventTypes.dense;
 		this.poolTypes = eventTypes == poolTypes ? this.eventTypes : new IdLookup(poolTypes);
+		int stringIndex = -1;
+		for (Type t : this.types) {
+			if (t.isString) {
+				stringIndex = t.index;
+			}
+		}
+		this.stringTypeIndex = stringIndex;
 		computeContainsStrings();
+	}
+
+	/**
+	 * Compiles {@link Type#referenceFields} and {@link Type#containsReferences}, which are only
+	 * computed on demand since they are only needed to count references.
+	 */
+	public void prepareReferences() {
+		if (referencesPrepared) {
+			return;
+		}
+		compileReferenceFields();
+		computeContainsReferences();
+		referencesPrepared = true;
 	}
 
 	static ChunkTypes fromMetadata(ChunkMetadata metadata) throws IOException {
@@ -117,7 +156,7 @@ public final class ChunkTypes {
 			byId.put(c.id, type);
 		}
 		for (int i = 0; i < classes.size(); i++) {
-			types.get(i).fields = compileFields(classes.get(i), byId);
+			compileFields(classes.get(i), types.get(i), byId);
 		}
 		return new ChunkTypes(false, types, types, types);
 	}
@@ -165,14 +204,22 @@ public final class ChunkTypes {
 		};
 	}
 
-	private static int[] compileFields(ClassElement element, Map<Long, Type> byId) throws IOException {
+	private static void compileFields(ClassElement element, Type type, Map<Long, Type> byId) throws IOException {
 		int[] ops = new int[element.fields.size()];
+		int[] refTargets = null;
 		for (int i = 0; i < ops.length; i++) {
 			FieldElement field = element.fields.get(i);
 			Type fieldType = byId.get(field.typeId);
 			if (fieldType == null) {
 				throw new IOException("Field " + element.name + "." + field.name + " has undeclared type id "
 						+ field.typeId);
+			}
+			if (field.constantPool) {
+				if (refTargets == null) {
+					refTargets = new int[ops.length];
+					Arrays.fill(refTargets, -1);
+				}
+				refTargets[i] = fieldType.index;
 			}
 			int op = field.constantPool ? KIND_VARINT : kindOf(fieldType);
 			if (op == KIND_STRUCT) {
@@ -183,7 +230,8 @@ public final class ChunkTypes {
 			}
 			ops[i] = op;
 		}
-		return ops;
+		type.fields = ops;
+		type.refTargets = refTargets;
 	}
 
 	private static int kindOf(Type type) {
@@ -217,6 +265,57 @@ public final class ChunkTypes {
 		for (int op : t.fields) {
 			int kind = op & KIND_MASK;
 			if (isStringKind(kind) || (kind == KIND_STRUCT && types[op >>> TYPE_SHIFT].containsStrings)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private void compileReferenceFields() {
+		for (Type t : types) {
+			int[] targets = t.refTargets;
+			t.referenceFields = t.fields;
+			if (targets == null) {
+				continue;
+			}
+			for (int i = 0; i < targets.length; i++) {
+				int target = targets[i];
+				if (target >= 0 && types[target].containsStrings && isKeyCompatible(t.fields[i], types[target])) {
+					if (t.referenceFields == t.fields) {
+						t.referenceFields = t.fields.clone();
+					}
+					t.referenceFields[i] = KIND_REF | (t.fields[i] & ARRAY_FLAG) | (target << TYPE_SHIFT);
+				}
+			}
+		}
+	}
+
+	/** In JFR 0.9 the reference is a plain number field, which must be as wide as the pool key */
+	private boolean isKeyCompatible(int op, Type pool) {
+		int kind = op & KIND_MASK;
+		if (legacy) {
+			return fixedSize(kind) > 0 && fixedSize(kind) == fixedSize(pool.keyKind);
+		}
+		return kind == KIND_VARINT && pool.keyKind == KIND_VARINT;
+	}
+
+	private void computeContainsReferences() {
+		boolean changed = true;
+		while (changed) {
+			changed = false;
+			for (Type t : types) {
+				if (!t.containsReferences && anyFieldContainsReferences(t)) {
+					t.containsReferences = true;
+					changed = true;
+				}
+			}
+		}
+	}
+
+	private boolean anyFieldContainsReferences(Type t) {
+		for (int op : t.referenceFields) {
+			int kind = op & KIND_MASK;
+			if (kind == KIND_REF || (kind == KIND_STRUCT && types[op >>> TYPE_SHIFT].containsReferences)) {
 				return true;
 			}
 		}

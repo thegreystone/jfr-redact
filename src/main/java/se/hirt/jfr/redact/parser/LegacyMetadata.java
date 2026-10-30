@@ -41,7 +41,9 @@ import static se.hirt.jfr.redact.parser.ChunkTypes.TYPE_SHIFT;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import se.hirt.jfr.redact.parser.ChunkTypes.Type;
 
@@ -71,10 +73,15 @@ final class LegacyMetadata {
 	private static final int DATA_TYPE_STRUCT = 14;
 	private static final int DATA_TYPE_STRUCT_ARRAY = 15;
 	private static final long BUFFER_LOST_EVENT_TYPE = 2;
+	private static final int CONTENT_TYPE_NONE = 0;
+	private static final int CONTENT_TYPE_THREAD = 7;
+	private static final int CONTENT_TYPE_STACK_TRACE = 9;
 
 	private final List<Type> types = new ArrayList<>();
 	private final List<Type> eventTypes = new ArrayList<>();
 	private final List<Type> poolTypes = new ArrayList<>();
+	/** Types whose refTargets hold content type ids until resolved, pools share those of their struct */
+	private final List<Type> unresolvedTypes = new ArrayList<>();
 
 	private LegacyMetadata() {
 	}
@@ -91,6 +98,7 @@ final class LegacyMetadata {
 			metadata.readProducer(stream);
 		}
 		metadata.addBufferLostEventType();
+		metadata.resolveReferences();
 		return new ChunkTypes(true, metadata.types, metadata.eventTypes, metadata.poolTypes);
 	}
 
@@ -109,7 +117,8 @@ final class LegacyMetadata {
 		int structCount = stream.readRawInt();
 		for (int i = 0; i < structCount; i++) {
 			Type struct = add(i, producerName + " struct " + i, 0);
-			struct.fields = readStructFields(stream, structBase, structCount);
+			readStructFields(stream, struct, structBase, structCount);
+			unresolvedTypes.add(struct);
 		}
 
 		int eventCount = stream.readRawInt();
@@ -122,26 +131,29 @@ final class LegacyMetadata {
 			boolean hasThread = stream.read() != 0;
 			boolean hasStackTrace = stream.read() != 0;
 			stream.skip(1); // requestable
-			int[] structFields = getStruct(stream.readRawInt(), structBase, structCount).fields;
+			Type struct = getStruct(stream.readRawInt(), structBase, structCount);
 			stream.skip(4); // unused
 
 			int[] header = new int[4];
+			int[] headerContentTypes = new int[4];
 			int headerLength = 0;
 			header[headerLength++] = KIND_FIXED8; // end time
 			if (hasStartTime) {
 				header[headerLength++] = KIND_FIXED8;
 			}
 			if (hasThread) {
+				headerContentTypes[headerLength] = CONTENT_TYPE_THREAD;
 				header[headerLength++] = KIND_FIXED4;
 			}
 			if (hasStackTrace) {
+				headerContentTypes[headerLength] = CONTENT_TYPE_STACK_TRACE;
 				header[headerLength++] = KIND_FIXED8;
 			}
 			Type event = add(id, path, 0);
-			event.fields = new int[headerLength + structFields.length];
-			System.arraycopy(header, 0, event.fields, 0, headerLength);
-			System.arraycopy(structFields, 0, event.fields, headerLength, structFields.length);
+			event.fields = concat(header, headerLength, struct.fields);
+			event.refTargets = concat(headerContentTypes, headerLength, struct.refTargets);
 			eventTypes.add(event);
+			unresolvedTypes.add(event);
 		}
 
 		int contentTypeCount = stream.readRawInt();
@@ -151,20 +163,24 @@ final class LegacyMetadata {
 			skipUtf(stream); // description
 			int keyKind = primitiveKind(stream.read());
 			Type pool = add(id, name, keyKind);
-			pool.fields = getStruct(stream.readRawInt(), structBase, structCount).fields;
+			Type struct = getStruct(stream.readRawInt(), structBase, structCount);
+			pool.fields = struct.fields;
+			pool.refTargets = struct.refTargets;
 			poolTypes.add(pool);
 		}
 	}
 
-	private int[] readStructFields(RecordingStream stream, int structBase, int structCount) throws IOException {
+	private void readStructFields(RecordingStream stream, Type struct, int structBase, int structCount)
+			throws IOException {
 		int[] ops = new int[stream.readRawInt()];
+		int[] contentTypes = new int[ops.length];
 		for (int i = 0; i < ops.length; i++) {
 			skipUtf(stream); // id
 			skipUtf(stream); // name
 			skipUtf(stream); // description
 			stream.skip(1); // transition
 			int dataType = stream.read();
-			stream.skip(4); // content type
+			contentTypes[i] = stream.readRawInt();
 			int structIndex = stream.readRawInt();
 			stream.skip(4); // unused
 			ops[i] = switch (dataType) {
@@ -174,7 +190,33 @@ final class LegacyMetadata {
 			default -> primitiveKind(dataType);
 			};
 		}
-		return ops;
+		struct.fields = ops;
+		struct.refTargets = contentTypes;
+	}
+
+	/**
+	 * Replaces the content type ids with the type index of the constant pool they denote, or -1 for
+	 * content types that are units rather than constant pools.
+	 */
+	private void resolveReferences() {
+		Map<Integer, Type> poolsById = new HashMap<>();
+		for (Type pool : poolTypes) {
+			poolsById.put((int) pool.id, pool);
+		}
+		for (Type t : unresolvedTypes) {
+			int[] targets = t.refTargets;
+			for (int i = 0; i < targets.length; i++) {
+				Type pool = targets[i] == CONTENT_TYPE_NONE ? null : poolsById.get(targets[i]);
+				targets[i] = pool == null ? -1 : pool.index;
+			}
+		}
+	}
+
+	private static int[] concat(int[] head, int headLength, int[] tail) {
+		int[] result = new int[headLength + tail.length];
+		System.arraycopy(head, 0, result, 0, headLength);
+		System.arraycopy(tail, 0, result, headLength, tail.length);
+		return result;
 	}
 
 	/** The JDK synthesizes this event type without declaring it: thread and number of bytes lost */

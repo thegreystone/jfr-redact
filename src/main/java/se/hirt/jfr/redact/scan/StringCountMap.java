@@ -56,14 +56,18 @@ public final class StringCountMap {
 	private int[] offsets = new int[1 << 11];
 	private int[] lengths = new int[1 << 11];
 	private long[] counts = new long[(1 << 11) * CATEGORIES];
+	/** References to the constants containing the string, only allocated if counted */
+	private long[] references;
 
 	private byte[] arena = new byte[1 << 16];
 	private int arenaUsed;
 
 	/**
 	 * Counts one occurrence of the UTF-8 encoded string in {@code source[offset, offset + length)}.
+	 *
+	 * @return the entry index of the string
 	 */
-	public void add(byte[] source, int offset, int length, int category) {
+	public int add(byte[] source, int offset, int length, int category) {
 		int hash = hash(source, offset, length);
 		int slot = hash & mask;
 		while (true) {
@@ -71,12 +75,12 @@ public final class StringCountMap {
 			if (entry < 0) {
 				entry = insert(source, offset, length, hash, slot);
 				counts[entry * CATEGORIES + category]++;
-				return;
+				return entry;
 			}
 			if (hashes[entry] == hash && lengths[entry] == length && Arrays.equals(arena, offsets[entry],
 					offsets[entry] + length, source, offset, offset + length)) {
 				counts[entry * CATEGORIES + category]++;
-				return;
+				return entry;
 			}
 			slot = (slot + 1) & mask;
 		}
@@ -112,6 +116,20 @@ public final class StringCountMap {
 		return counts[entry * CATEGORIES + category];
 	}
 
+	/**
+	 * @return the number of references to constants containing the string, or 0 if not counted
+	 */
+	public long getReferenceCount(int entry) {
+		return references == null ? 0 : references[entry];
+	}
+
+	void addReferences(int entry, long count) {
+		if (references == null) {
+			references = new long[hashes.length];
+		}
+		references[entry] += count;
+	}
+
 	public long getTotalCount(int entry) {
 		long total = 0;
 		for (int i = 0; i < CATEGORIES; i++) {
@@ -137,6 +155,9 @@ public final class StringCountMap {
 			offsets = Arrays.copyOf(offsets, capacity);
 			lengths = Arrays.copyOf(lengths, capacity);
 			counts = Arrays.copyOf(counts, capacity * CATEGORIES);
+			if (references != null) {
+				references = Arrays.copyOf(references, capacity);
+			}
 		}
 		hashes[entry] = hash;
 		offsets[entry] = arenaUsed;

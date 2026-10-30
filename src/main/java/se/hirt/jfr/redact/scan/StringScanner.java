@@ -41,7 +41,14 @@ import se.hirt.jfr.redact.parser.RecordingStream;
 /**
  * Collects every string stored in a recording, counting how often each one is stored inline in an
  * event and how often it is stored inside a constant pool (checkpoint event). References to the
- * string constant pool are not occurrences of the string bytes, and are only counted in total.
+ * string constant pool are not occurrences of the string bytes, and are only counted in total,
+ * unless reference counting is enabled.
+ * <p>
+ * With reference counting, every reference to a constant containing strings, from an event or from
+ * another constant, is credited to the strings stored in that constant. Only direct references are
+ * counted: an event referring to a stack trace does not count as a reference to the method names in
+ * it. Reference counting decodes nearly all events, and uses separate code paths so that it does
+ * not affect the performance when disabled.
  * <p>
  * Strings are keyed by their UTF-8 encoding, so the same string stored as UTF-8, Latin-1, UTF-16 or
  * char array is counted as one.
@@ -58,13 +65,23 @@ public final class StringScanner implements ChunkParserListener {
 	private static final byte STRING_ENCODING_UTF8_BYTE_ARRAY = 3;
 	private static final byte STRING_ENCODING_CHAR_ARRAY = 4;
 	private static final byte STRING_ENCODING_LATIN1_BYTE_ARRAY = 5;
+	/** Returned by the string readers for a null string */
+	private static final int NO_STRING = -1;
+	/** Returned by the string readers for a reference to a string constant, see {@link #lastStringReference} */
+	private static final int STRING_REFERENCE = -2;
 
 	private final StringCountMap strings = new StringCountMap();
 	private final boolean decodeAllEvents;
+	/** Null unless references are counted */
+	private final ReferenceCounter references;
+	/** Events that cannot contain inlined strings can be skipped: not validating, nor counting references */
+	private final boolean skipEventsWithoutStrings;
 	private ChunkTypes types;
 	private boolean legacy;
 	private byte[] scratch = new byte[1024];
 	private char[] chars = new char[256];
+	/** The key of the last string constant reference read */
+	private long lastStringReference;
 
 	private long chunkCount;
 	private long eventCount;
@@ -82,7 +99,19 @@ public final class StringScanner implements ChunkParserListener {
 	 *            instead of skipped, which is only useful to validate the decoding
 	 */
 	public StringScanner(boolean decodeAllEvents) {
+		this(decodeAllEvents, false);
+	}
+
+	/**
+	 * @param decodeAllEvents
+	 *            see {@link #StringScanner(boolean)}
+	 * @param countReferences
+	 *            if {@code true}, count the references to the constants containing each string
+	 */
+	public StringScanner(boolean decodeAllEvents, boolean countReferences) {
 		this.decodeAllEvents = decodeAllEvents;
+		this.references = countReferences ? new ReferenceCounter() : null;
+		this.skipEventsWithoutStrings = !decodeAllEvents && !countReferences;
 	}
 
 	public StringScanner() {
@@ -94,6 +123,9 @@ public final class StringScanner implements ChunkParserListener {
 		chunkCount++;
 		this.types = types;
 		this.legacy = types.legacy;
+		if (references != null) {
+			types.prepareReferences();
+		}
 	}
 
 	@Override
@@ -104,7 +136,12 @@ public final class StringScanner implements ChunkParserListener {
 			unknownEventCount++;
 			return;
 		}
-		if (!type.containsStrings && !decodeAllEvents) {
+		// Most events are skipped, so decide those with a single check, as cheap as without references
+		if (!type.containsStrings && skipEventsWithoutStrings) {
+			return;
+		}
+		if (references != null) {
+			readEventCountingReferences(type, stream, payloadSize);
 			return;
 		}
 		decodedEventCount++;
@@ -123,13 +160,22 @@ public final class StringScanner implements ChunkParserListener {
 	public void onCheckpoint(RecordingStream stream, int payloadSize) throws IOException {
 		checkpointCount++;
 		int end = stream.position() + payloadSize;
-		if (legacy) {
+		if (references != null) {
+			readCheckpointCountingReferences(stream, end);
+		} else if (legacy) {
 			readLegacyCheckpoint(stream, end);
 		} else {
 			readCheckpoint(stream);
 		}
 		if (stream.position() != end) {
 			misalignedCount++;
+		}
+	}
+
+	@Override
+	public void onChunkEnd() {
+		if (references != null) {
+			references.flush(strings);
 		}
 	}
 
@@ -247,14 +293,130 @@ public final class StringScanner implements ChunkParserListener {
 		}
 	}
 
-	private void readUtf8(RecordingStream stream, int category) throws IOException {
-		int length = stream.readRawShort() & 0xFFFF;
-		checkLength(stream, length);
-		add(stream.array(), stream.position(), length, category);
-		stream.skip(length);
+	private void readEventCountingReferences(Type type, RecordingStream stream, int payloadSize)
+			throws IOException {
+		if (!type.containsStrings && !type.containsReferences && !decodeAllEvents) {
+			return;
+		}
+		decodedEventCount++;
+		int end = stream.position() + payloadSize;
+		readReferencingFields(stream, type.referenceFields, INLINE);
+		if (stream.position() != end) {
+			misalignedCount++;
+		}
 	}
 
-	private void readUtf16(RecordingStream stream, int category) throws IOException {
+	private void readCheckpointCountingReferences(RecordingStream stream, int end) throws IOException {
+		if (legacy) {
+			stream.skip(8); // timestamp
+			stream.skip(8); // offset of previous checkpoint
+			while (stream.position() < end) {
+				Type type = getPoolType(stream.readRawInt());
+				int count = stream.readRawInt();
+				readConstantsCountingReferences(stream, type, count);
+			}
+		} else {
+			stream.skipVarint(); // start time
+			stream.skipVarint(); // duration
+			stream.skipVarint(); // delta to previous checkpoint
+			stream.skip(1); // checkpoint type
+			int poolCount = (int) stream.readVarint();
+			for (int i = 0; i < poolCount; i++) {
+				Type type = getPoolType(stream.readVarint());
+				int count = (int) stream.readVarint();
+				readConstantsCountingReferences(stream, type, count);
+			}
+		}
+	}
+
+	private void readConstantsCountingReferences(RecordingStream stream, Type type, int count) throws IOException {
+		constantCount += count;
+		boolean recordStrings = type.containsStrings;
+		for (int j = 0; j < count; j++) {
+			long key = readKey(stream, type.keyKind);
+			if (recordStrings) {
+				references.beginConstant();
+			}
+			if (type.isString) {
+				recordString(readStringEntry(stream, CONSTANT_POOL));
+			} else {
+				readReferencingFields(stream, type.referenceFields, CONSTANT_POOL);
+			}
+			if (recordStrings) {
+				references.endConstant(type.index, key);
+			}
+		}
+	}
+
+	/**
+	 * Field walk for reference counting, for both JFR 0.9 and 1.0+. Kept apart from the walks used
+	 * without reference counting so that those stay as lean as possible.
+	 */
+	private void readReferencingFields(RecordingStream stream, int[] fields, int category) throws IOException {
+		for (int op : fields) {
+			if ((op & ChunkTypes.ARRAY_FLAG) == 0) {
+				readReferencingValue(stream, op, category);
+			} else {
+				int length = legacy ? stream.readRawInt() : (int) stream.readVarint();
+				int fixedSize = ChunkTypes.fixedSize(op & ChunkTypes.KIND_MASK);
+				if (fixedSize > 0) {
+					stream.skip(length * fixedSize);
+				} else {
+					for (int i = 0; i < length; i++) {
+						readReferencingValue(stream, op, category);
+					}
+				}
+			}
+		}
+	}
+
+	private void readReferencingValue(RecordingStream stream, int op, int category) throws IOException {
+		switch (op & ChunkTypes.KIND_MASK) {
+		case ChunkTypes.KIND_FIXED1 -> stream.skip(1);
+		case ChunkTypes.KIND_VARINT -> stream.skipVarint();
+		case ChunkTypes.KIND_FIXED4 -> stream.skip(4);
+		case ChunkTypes.KIND_FIXED8 -> stream.skip(8);
+		case ChunkTypes.KIND_STRING -> recordString(readStringEntry(stream, category));
+		case ChunkTypes.KIND_FIXED2 -> stream.skip(2);
+		case ChunkTypes.KIND_UTF8 -> recordString(readUtf8(stream, category));
+		case ChunkTypes.KIND_UTF16 -> recordString(readUtf16(stream, category));
+		case ChunkTypes.KIND_REF -> {
+			Type pool = types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT);
+			references.reference(pool.index, readKey(stream, pool.keyKind));
+		}
+		default -> readReferencingFields(stream, types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT).referenceFields,
+				category);
+		}
+	}
+
+	private void recordString(int entry) {
+		if (entry >= 0) {
+			references.addString(entry);
+		} else if (entry == STRING_REFERENCE && types.stringTypeIndex >= 0) {
+			references.reference(types.stringTypeIndex, lastStringReference);
+		}
+	}
+
+	private static long readKey(RecordingStream stream, int keyKind) throws IOException {
+		return switch (keyKind) {
+		case ChunkTypes.KIND_VARINT -> stream.readVarint();
+		case ChunkTypes.KIND_FIXED1 -> stream.read();
+		case ChunkTypes.KIND_FIXED2 -> stream.readRawShort();
+		case ChunkTypes.KIND_FIXED4 -> stream.readRawInt();
+		case ChunkTypes.KIND_FIXED8 -> stream.readRawLong();
+		default -> throw new IOException("Unsupported constant pool key kind " + keyKind);
+		};
+	}
+
+	private int readUtf8(RecordingStream stream, int category) throws IOException {
+		int length = stream.readRawShort() & 0xFFFF;
+		checkLength(stream, length);
+		int entry = addEntry(stream.array(), stream.position(), length, category);
+		stream.skip(length);
+		return entry;
+	}
+
+	private int readUtf16(RecordingStream stream, int category) throws IOException {
 		int length = stream.readRawInt();
 		checkLength(stream, length * 2L);
 		char[] chars = ensureChars(length);
@@ -262,7 +424,7 @@ public final class StringScanner implements ChunkParserListener {
 			chars[i] = (char) stream.readRawShort();
 		}
 		int utf8Length = charsToUtf8(chars, length);
-		add(scratch, 0, utf8Length, category);
+		return addEntry(scratch, 0, utf8Length, category);
 	}
 
 	private void readString(RecordingStream stream, int category) throws IOException {
@@ -311,9 +473,65 @@ public final class StringScanner implements ChunkParserListener {
 		}
 	}
 
+	/**
+	 * Same as {@link #readString}, but returns what was read, for the reference counting. A separate
+	 * copy, since the return value measurably slows down the walks without reference counting.
+	 *
+	 * @return the entry index of the string, {@link #NO_STRING} or {@link #STRING_REFERENCE}
+	 */
+	private int readStringEntry(RecordingStream stream, int category) throws IOException {
+		byte encoding = stream.read();
+		switch (encoding) {
+		case STRING_ENCODING_NULL:
+			return NO_STRING;
+		case STRING_ENCODING_CONSTANT_POOL:
+			lastStringReference = stream.readVarint();
+			constantPoolReferenceCount++;
+			return STRING_REFERENCE;
+		case STRING_ENCODING_EMPTY_STRING:
+			return addEntry(stream.array(), 0, 0, category);
+		case STRING_ENCODING_UTF8_BYTE_ARRAY: {
+			int length = readLength(stream);
+			int entry = addEntry(stream.array(), stream.position(), length, category);
+			stream.skip(length);
+			return entry;
+		}
+		case STRING_ENCODING_LATIN1_BYTE_ARRAY: {
+			int length = readLength(stream);
+			int offset = stream.position();
+			byte[] array = stream.array();
+			int entry;
+			if (isAscii(array, offset, length)) {
+				entry = addEntry(array, offset, length, category);
+			} else {
+				int utf8Length = latin1ToUtf8(array, offset, length);
+				entry = addEntry(scratch, 0, utf8Length, category);
+			}
+			stream.skip(length);
+			return entry;
+		}
+		case STRING_ENCODING_CHAR_ARRAY: {
+			int length = readLength(stream);
+			char[] chars = ensureChars(length);
+			for (int i = 0; i < length; i++) {
+				chars[i] = (char) stream.readVarint();
+			}
+			int utf8Length = charsToUtf8(chars, length);
+			return addEntry(scratch, 0, utf8Length, category);
+		}
+		default:
+			throw new IOException("Unknown string encoding " + encoding + " at offset " + (stream.position() - 1));
+		}
+	}
+
 	private void add(byte[] source, int offset, int length, int category) {
 		strings.add(source, offset, length, category);
 		occurrences[category]++;
+	}
+
+	private int addEntry(byte[] source, int offset, int length, int category) {
+		occurrences[category]++;
+		return strings.add(source, offset, length, category);
 	}
 
 	private static int readLength(RecordingStream stream) throws IOException {
@@ -445,6 +663,24 @@ public final class StringScanner implements ChunkParserListener {
 
 	public long getConstantPoolReferenceCount() {
 		return constantPoolReferenceCount;
+	}
+
+	public boolean isCountingReferences() {
+		return references != null;
+	}
+
+	/**
+	 * @return the number of references to constants containing strings, if counted
+	 */
+	public long getReferenceCount() {
+		return references == null ? 0 : references.getReferenceCount();
+	}
+
+	/**
+	 * @return the number of references to constants that were never defined in the chunk, if counted
+	 */
+	public long getUnresolvedReferenceCount() {
+		return references == null ? 0 : references.getUnresolvedReferenceCount();
 	}
 
 	public long getUnknownEventCount() {

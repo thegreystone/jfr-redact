@@ -100,6 +100,42 @@ class StringScannerTest {
 	}
 
 	@Test
+	void countsReferences(@TempDir Path dir) throws Exception {
+		Path file = dir.resolve("references.jfr");
+		try (Recording recording = new Recording()) {
+			recording.enable(MessageEvent.class);
+			recording.start();
+			emitMessages();
+			recording.stop();
+			recording.dump(file);
+		}
+
+		StringScanner scanner = new StringScanner(true, true);
+		new StreamingChunkParser().parse(file, scanner);
+		StringCountMap strings = scanner.getStrings();
+		assertEquals(0, scanner.getMisalignedCount());
+		assertEquals(0, scanner.getUnresolvedReferenceCount());
+		assertEquals(1, scanner.getChunkCount());
+
+		int repeatedEntry = strings.indexOf(REPEATED);
+		assertEquals(1000, strings.getCount(repeatedEntry, StringScanner.INLINE)
+				+ strings.getReferenceCount(repeatedEntry), "every event either inlines or references it");
+
+		int shortEntry = strings.indexOf(SHORT);
+		assertEquals(0, strings.getReferenceCount(shortEntry), "short strings are never pooled");
+
+		int methodEntry = strings.indexOf("emitMessages");
+		assertTrue(strings.getReferenceCount(methodEntry) >= 1, "referenced by the method constant");
+
+		StringScanner plain = scan(file, true);
+		assertEquals(plain.getStrings().size(), strings.size());
+		assertEquals(plain.getOccurrenceCount(StringScanner.INLINE), scanner.getOccurrenceCount(StringScanner.INLINE));
+		assertEquals(plain.getOccurrenceCount(StringScanner.CONSTANT_POOL),
+				scanner.getOccurrenceCount(StringScanner.CONSTANT_POOL));
+		assertEquals(0, plain.getStrings().getReferenceCount(plain.getStrings().indexOf(REPEATED)));
+	}
+
+	@Test
 	void decodesAllEventsOfDefaultRecording(@TempDir Path dir) throws Exception {
 		Path file = dir.resolve("default.jfr");
 		try (Recording recording = new Recording(Configuration.getConfiguration("profile"))) {

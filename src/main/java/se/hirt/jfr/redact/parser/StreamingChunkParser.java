@@ -119,6 +119,7 @@ public final class StreamingChunkParser {
 			dispatch(listener, stream.readVarint(), eventEnd);
 			eventStart = eventEnd;
 		}
+		listener.onChunkEnd();
 	}
 
 	/**
@@ -162,6 +163,7 @@ public final class StreamingChunkParser {
 			dispatch(listener, stream.readRawInt(), eventEnd);
 			eventStart = eventEnd;
 		}
+		listener.onChunkEnd();
 	}
 
 	private void dispatch(ChunkParserListener listener, long eventType, int eventEnd) throws IOException {

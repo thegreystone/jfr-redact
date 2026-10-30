@@ -16,8 +16,12 @@ The first pass, `scan`, walks a recording and reports every string stored in it,
 inline in events and inside constant pools.
 
 ```
-jfr-redact scan [--top <n>] [--table] [--out <file.tsv>] [--validate] <recording.jfr>
+jfr-redact scan [--top <n>] [--table] [--references] [--out <file.tsv>] [--validate] <recording.jfr>
 ```
+
+`--references` also counts the direct references to the constants containing each string, from events and from other
+constants (for example a method constant referring to its name). This decodes nearly all events, roughly 1.5-2x the
+cost of a plain scan, and is implied by `--table`. Without it, the scan is unaffected.
 
 `scripts/demo.sh <recording.jfr> [n]` shows the top strings as a table, using the native image if built, otherwise
 the jar.

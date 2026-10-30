@@ -56,4 +56,9 @@ public interface ChunkParserListener {
 	 *            the number of bytes left in the event
 	 */
 	void onEvent(long typeId, RecordingStream stream, int payloadSize) throws IOException;
+
+	/**
+	 * Called last for every chunk, after all its events and checkpoints.
+	 */
+	void onChunkEnd() throws IOException;
 }
