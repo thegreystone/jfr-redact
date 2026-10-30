@@ -1,0 +1,27 @@
+# Build output
+target/
+*.class
+dependency-reduced-pom.xml
+
+# Profiling output
+*.jfr
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+.factorypath
+
+# Logs
+*.log
+hs_err_pid*
+replay_pid*
+
+# OS
+.DS_Store
+
+# Claude Code agent session state
+.claude/
