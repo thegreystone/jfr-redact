@@ -26,7 +26,7 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-package se.hirt.jfr.redact;
+package se.hirt.jfr.redact.cli;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -35,16 +35,28 @@ import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.List;
+import java.util.regex.Pattern;
 
 import se.hirt.jfr.redact.parser.StreamingChunkParser;
+import se.hirt.jfr.redact.RuleRedactor;
+import se.hirt.jfr.redact.JfrRedactor;
+import se.hirt.jfr.redact.RedactionResult;
+import se.hirt.jfr.redact.StringRedactor;
 import se.hirt.jfr.redact.scan.StringCountMap;
 import se.hirt.jfr.redact.scan.StringScanner;
 
 public final class Main {
 	private static final String USAGE = """
 			Usage: jfr-redact scan [options] <recording.jfr>
+			       jfr-redact redact [--hash-thread-names] [--hash-class-names <regex>]...
+			                         [--hash-method-names <regex>]...
+			                         [--rename-package <package> <new name>]...
+			                         [--replace <pattern> <replacement>]... [--match <regex>]...
+			                         [--replacement <text>] <recording.jfr> <redacted.jfr>
 
 			Lists all strings stored in the recording, with the number of times each one is stored
 			inline in events and in constant pools.
@@ -62,6 +74,27 @@ public final class Main {
 			                 references (if counted), string
 			  --validate     Decode all events, also those that cannot contain strings, and verify that
 			                 every event decodes to its declared size
+
+			Redact replaces strings everywhere they are stored in the recording, and writes the result to
+			a new recording. Rules are tried in the order given, with --match last.
+
+			Options:
+			  --hash-thread-names   Replace thread names with Thread-<hash of the name>
+			  --hash-class-names <regex>
+			                        Replace the part of class names matching the expression (the first
+			                        group, if any) with a hash, as in 'com\\.acme\\.(.*)'. Can be repeated
+			  --hash-method-names <regex>
+			                        Same for method names. Can be repeated
+			  --rename-package <package> <new name>
+			                        Rename a package and its subpackages, in source form (java.util.List),
+			                        internal form (java/util/List) and descriptors. Can be repeated
+			  --replace <pattern> <replacement>
+			                        Replace strings matching a pattern, which may start and/or end with *,
+			                        as in --replace 'java.util.*' 'utilz.*'. A * in the replacement is the
+			                        matched remainder. Can be repeated
+			  --match <regex>       Replace strings containing a match of the regular expression with the
+			                        --replacement text. Can be repeated
+			  --replacement <text>  Replacement for --match (default <REDACTED>)
 			""";
 
 	private static final int TABLE_STRING_WIDTH = 40;
@@ -81,6 +114,9 @@ public final class Main {
 	}
 
 	static int run(String[] args, PrintStream out, PrintStream err) throws IOException {
+		if (args.length > 0 && "redact".equals(args[0])) {
+			return redact(args, out, err);
+		}
 		if (args.length == 0 || !"scan".equals(args[0])) {
 			err.print(USAGE);
 			return 2;
@@ -136,6 +172,85 @@ public final class Main {
 			err.println("Validation failed: " + scanner.getMisalignedCount()
 					+ " events or checkpoints did not decode to their declared size");
 			return 1;
+		}
+		return 0;
+	}
+
+	private static int redact(String[] args, PrintStream out, PrintStream err) throws IOException {
+		List<Pattern> patterns = new ArrayList<>();
+		RuleRedactor.Builder globs = RuleRedactor.builder();
+		boolean anyGlob = false;
+		String replacement = "<REDACTED>";
+		List<Path> files = new ArrayList<>();
+		for (int i = 1; i < args.length; i++) {
+			switch (args[i]) {
+			case "--match" -> patterns.add(Pattern.compile(requireValue(args, ++i)));
+			case "--hash-class-names" -> {
+				globs.hashClassNames(requireValue(args, ++i));
+				anyGlob = true;
+			}
+			case "--hash-method-names" -> {
+				globs.hashMethodNames(requireValue(args, ++i));
+				anyGlob = true;
+			}
+			case "--hash-thread-names" -> {
+				globs.hashThreadNames();
+				anyGlob = true;
+			}
+			case "--rename-package" -> {
+				String packageName = requireValue(args, ++i);
+				globs.renamePackage(packageName, requireValue(args, ++i));
+				anyGlob = true;
+			}
+			case "--replace" -> {
+				String pattern = requireValue(args, ++i);
+				globs.replace(pattern, requireValue(args, ++i));
+				anyGlob = true;
+			}
+			case "--replacement" -> replacement = requireValue(args, ++i);
+			default -> {
+				if (args[i].startsWith("-")) {
+					err.println("Unexpected argument: " + args[i]);
+					err.print(USAGE);
+					return 2;
+				}
+				files.add(Path.of(args[i]));
+			}
+			}
+		}
+		if (files.size() != 2 || (patterns.isEmpty() && !anyGlob)) {
+			err.print(USAGE);
+			return 2;
+		}
+		String fixedReplacement = replacement;
+		StringRedactor regexRedactor = (value, locations) -> {
+			for (Pattern pattern : patterns) {
+				if (pattern.matcher(value).find()) {
+					return fixedReplacement;
+				}
+			}
+			return value;
+		};
+		long start = System.nanoTime();
+		RedactionResult result = JfrRedactor.redact(files.get(0), files.get(1),
+				globs.build().orElse(regexRedactor));
+		double millis = (System.nanoTime() - start) / 1e6;
+		out.printf("Redacted %s into %s in %.1f ms%n", files.get(0), files.get(1), millis);
+		out.printf("Strings: %,d of %,d redacted, %,d stored occurrences replaced%n", result.redactedStringCount(),
+				result.stringCount(), result.replacedOccurrenceCount());
+		out.printf("Chunks: %,d of %,d rewritten, %,d events and %,d checkpoints re-encoded%n",
+				result.rewrittenChunkCount(), result.chunkCount(), result.rewrittenEventCount(),
+				result.rewrittenCheckpointCount());
+		if (!result.redactedInMetadata().isEmpty()) {
+			err.printf("Warning: %,d redacted strings also occur in the metadata, where they remain:%n",
+					result.redactedInMetadata().size());
+			List<String> shown = result.redactedInMetadata().subList(0, Math.min(10, result.redactedInMetadata().size()));
+			for (String s : shown) {
+				err.println("  " + toTableCell(s));
+			}
+			if (shown.size() < result.redactedInMetadata().size()) {
+				err.printf("  ... and %,d more%n", result.redactedInMetadata().size() - shown.size());
+			}
 		}
 		return 0;
 	}

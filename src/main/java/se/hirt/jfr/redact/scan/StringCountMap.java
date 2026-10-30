@@ -91,17 +91,32 @@ public final class StringCountMap {
 	 */
 	public int indexOf(String s) {
 		byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
-		int hash = hash(bytes, 0, bytes.length);
+		return find(bytes, 0, bytes.length);
+	}
+
+	/**
+	 * @return the entry index of the UTF-8 encoded string in {@code source[offset, offset + length)},
+	 *         or -1 if not present
+	 */
+	public int find(byte[] source, int offset, int length) {
+		int hash = hash(source, offset, length);
 		for (int slot = hash & mask;; slot = (slot + 1) & mask) {
 			int entry = slots[slot] - 1;
 			if (entry < 0) {
 				return -1;
 			}
-			if (hashes[entry] == hash && lengths[entry] == bytes.length
-					&& Arrays.equals(arena, offsets[entry], offsets[entry] + bytes.length, bytes, 0, bytes.length)) {
+			if (hashes[entry] == hash && lengths[entry] == length && Arrays.equals(arena, offsets[entry],
+					offsets[entry] + length, source, offset, offset + length)) {
 				return entry;
 			}
 		}
+	}
+
+	/**
+	 * @return the UTF-8 encoding of the string
+	 */
+	public byte[] getBytes(int entry) {
+		return Arrays.copyOfRange(arena, offsets[entry], offsets[entry] + lengths[entry]);
 	}
 
 	public int size() {

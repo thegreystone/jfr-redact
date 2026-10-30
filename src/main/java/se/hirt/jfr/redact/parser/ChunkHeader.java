@@ -36,6 +36,7 @@ public final class ChunkHeader {
 	public final short major;
 	public final short minor;
 	public final long size;
+	public final long constantPoolOffset;
 	public final long metadataOffset;
 	public final boolean compressedInts;
 
@@ -47,7 +48,7 @@ public final class ChunkHeader {
 		this.major = major;
 		this.minor = minor;
 		size = stream.readRawLong();
-		stream.skip(8); // constant pool offset
+		constantPoolOffset = stream.readRawLong();
 		metadataOffset = stream.readRawLong();
 		stream.skip(4 * 8); // start nanos, duration, start ticks, ticks per second
 		compressedInts = (stream.readRawInt() & FEATURE_COMPRESSED_INTS) != 0;

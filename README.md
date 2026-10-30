@@ -1,6 +1,6 @@
 # JFR Redact
 
-Low-cost string redaction for JDK Flight Recorder recordings.
+High performance string redaction for JDK Flight Recorder recordings.
 
 Strings in a JFR recording do not only live in the constant pools. A string can be written inline in an event, as an
 entry in the `java.lang.String` constant pool, or inline in another constant pool entry (for example the
@@ -25,6 +25,49 @@ cost of a plain scan, and is implied by `--table`. Without it, the scan is unaff
 
 `scripts/demo.sh <recording.jfr> [n]` shows the top strings as a table, using the native image if built, otherwise
 the jar.
+
+## Redaction
+
+`JfrRedactor.redact(input, output, redactor)` writes a copy of a recording with strings replaced. The
+`StringRedactor` is called once per distinct string, after the whole recording has been analyzed, with every location
+the string is stored at: the event or constant pool type, the field, and for constants the fields of other constants
+referring to it (a method name is a `jdk.types.Symbol` referred to by `jdk.types.Method.name`). Its decision applies to
+every occurrence of the string, inline in events, in constant pools and in all chunks, so no copy of a redacted string
+remains. The one exception is the metadata (type, field and annotation names and values), which is not redacted:
+redacted strings that also occur there are reported in the result.
+
+Redaction refuses recordings it cannot fully decode, such as ones with events of undeclared types, rather than risk
+leaving strings it could not see.
+
+```
+jfr-redact redact --match <regex> [--match <regex>]... [--replacement <text>] <recording.jfr> <redacted.jfr>
+```
+
+`RedactionVerifier` in the test sources redacts any recording aggressively and verifies the result independently.
+
+## Test recordings
+
+`src/test/resources/recordings` has one recording per supported JFR version, used by the tests and examples:
+
+| Recording | JFR | Content |
+|-----------|-----|---------|
+| `jrockit-r28-transitions.jfr` | 0.9 | JRockit R28 test application, with environment variables and system properties |
+| `jdk9-basic.jfr` | 1.0 | JDK 9 running JConsole, with RMI connection threads |
+| `jdk9-weblogic-medrec.jfr` | 1.0 | WebLogic running the MedRec patient records demo, with SQL, servlet and EJB events |
+| `jdk21-jmc.jfr` | 2.1 | JDK 21 running JDK Mission Control, with thread dumps |
+
+They come from the JDK Mission Control test resources, see [NOTICE](NOTICE). Personal data in two of them was
+replaced with jfr-redact itself, using the `ScrubPersonalData` example. `RedactPatientData` shows a redaction of the
+MedRec recording:
+
+```java
+StringRedactor redactor = RuleRedactor.builder()
+		.hashThreadNames()
+		.hashClassNames("com\\.bea\\.medrec\\.(.*)")
+		.build()
+		.orElse((value, locations) -> EMAIL.matcher(value).replaceAll("<EMAIL>"));
+JfrRedactor.redact(Path.of("jdk9-weblogic-medrec.jfr"), Path.of("redacted.jfr"), redactor);
+```
 
 ## How it works
 

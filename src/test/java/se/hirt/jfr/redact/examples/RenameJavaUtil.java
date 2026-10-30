@@ -26,20 +26,32 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-package se.hirt.jfr.redact;
+package se.hirt.jfr.redact.examples;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import java.io.IOException;
+import java.nio.file.Path;
 
-import org.junit.jupiter.api.Test;
+import se.hirt.jfr.redact.RuleRedactor;
+import se.hirt.jfr.redact.JfrRedactor;
+import se.hirt.jfr.redact.RedactionResult;
+import se.hirt.jfr.redact.StringRedactor;
 
-class MainTest {
-	@Test
-	void tableCell() {
-		assertEquals("<EMPTY>", Main.toTableCell(""));
-		assertEquals("java.lang.Thread", Main.toTableCell("java.lang.Thread"));
-		assertEquals("K~ssnacht~~", Main.toTableCell("Küssnacht\t😀"));
-		assertEquals("x".repeat(40), Main.toTableCell("x".repeat(40)));
-		assertEquals("x".repeat(37) + "...", Main.toTableCell("x".repeat(41)));
-		assertEquals("~".repeat(37) + "...", Main.toTableCell("€".repeat(100)));
+/**
+ * Renames the {@code java.util} package to {@code utilz} everywhere in a recording.
+ * <p>
+ * Usage: {@code java -cp target/classes:target/test-classes
+ * se.hirt.jfr.redact.examples.RenameJavaUtil <recording.jfr> <redacted.jfr>}
+ */
+public final class RenameJavaUtil {
+	private RenameJavaUtil() {
+	}
+
+	public static void main(String[] args) throws IOException {
+		// Renames java.util and its subpackages in source form (java.util.HashMap), internal form
+		// (java/util/HashMap), descriptors ((Ljava/util/List;)V) and array class names
+		StringRedactor redactor = RuleRedactor.builder().renamePackage("java.util", "utilz").build();
+
+		RedactionResult result = JfrRedactor.redact(Path.of(args[0]), Path.of(args[1]), redactor);
+		System.out.printf("Renamed %,d of %,d strings%n", result.redactedStringCount(), result.stringCount());
 	}
 }

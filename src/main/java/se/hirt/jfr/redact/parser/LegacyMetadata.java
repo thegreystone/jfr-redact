@@ -80,6 +80,7 @@ final class LegacyMetadata {
 	private final List<Type> types = new ArrayList<>();
 	private final List<Type> eventTypes = new ArrayList<>();
 	private final List<Type> poolTypes = new ArrayList<>();
+	private final List<String> strings = new ArrayList<>();
 	/** Types whose refTargets hold content type ids until resolved, pools share those of their struct */
 	private final List<Type> unresolvedTypes = new ArrayList<>();
 
@@ -99,7 +100,9 @@ final class LegacyMetadata {
 		}
 		metadata.addBufferLostEventType();
 		metadata.resolveReferences();
-		return new ChunkTypes(true, metadata.types, metadata.eventTypes, metadata.poolTypes);
+		ChunkTypes chunkTypes = new ChunkTypes(true, metadata.types, metadata.eventTypes, metadata.poolTypes);
+		chunkTypes.setMetadataStrings(metadata.strings.toArray(new String[0]));
+		return chunkTypes;
 	}
 
 	private void readProducer(RecordingStream stream) throws IOException {
@@ -136,21 +139,27 @@ final class LegacyMetadata {
 
 			int[] header = new int[4];
 			int[] headerContentTypes = new int[4];
+			String[] headerNames = new String[4];
 			int headerLength = 0;
-			header[headerLength++] = KIND_FIXED8; // end time
+			headerNames[headerLength] = "endTime";
+			header[headerLength++] = KIND_FIXED8;
 			if (hasStartTime) {
+				headerNames[headerLength] = "startTime";
 				header[headerLength++] = KIND_FIXED8;
 			}
 			if (hasThread) {
+				headerNames[headerLength] = "eventThread";
 				headerContentTypes[headerLength] = CONTENT_TYPE_THREAD;
 				header[headerLength++] = KIND_FIXED4;
 			}
 			if (hasStackTrace) {
+				headerNames[headerLength] = "stackTrace";
 				headerContentTypes[headerLength] = CONTENT_TYPE_STACK_TRACE;
 				header[headerLength++] = KIND_FIXED8;
 			}
 			Type event = add(id, path, 0);
 			event.fields = concat(header, headerLength, struct.fields);
+			event.fieldNames = concat(headerNames, headerLength, struct.fieldNames);
 			event.refTargets = concat(headerContentTypes, headerLength, struct.refTargets);
 			eventTypes.add(event);
 			unresolvedTypes.add(event);
@@ -165,6 +174,7 @@ final class LegacyMetadata {
 			Type pool = add(id, name, keyKind);
 			Type struct = getStruct(stream.readRawInt(), structBase, structCount);
 			pool.fields = struct.fields;
+			pool.fieldNames = struct.fieldNames;
 			pool.refTargets = struct.refTargets;
 			poolTypes.add(pool);
 		}
@@ -173,9 +183,10 @@ final class LegacyMetadata {
 	private void readStructFields(RecordingStream stream, Type struct, int structBase, int structCount)
 			throws IOException {
 		int[] ops = new int[stream.readRawInt()];
+		String[] names = new String[ops.length];
 		int[] contentTypes = new int[ops.length];
 		for (int i = 0; i < ops.length; i++) {
-			skipUtf(stream); // id
+			names[i] = readUtf(stream); // id
 			skipUtf(stream); // name
 			skipUtf(stream); // description
 			stream.skip(1); // transition
@@ -191,6 +202,7 @@ final class LegacyMetadata {
 			};
 		}
 		struct.fields = ops;
+		struct.fieldNames = names;
 		struct.refTargets = contentTypes;
 	}
 
@@ -219,6 +231,13 @@ final class LegacyMetadata {
 		return result;
 	}
 
+	private static String[] concat(String[] head, int headLength, String[] tail) {
+		String[] result = new String[headLength + tail.length];
+		System.arraycopy(head, 0, result, 0, headLength);
+		System.arraycopy(tail, 0, result, headLength, tail.length);
+		return result;
+	}
+
 	/** The JDK synthesizes this event type without declaring it: thread and number of bytes lost */
 	private void addBufferLostEventType() {
 		for (Type t : eventTypes) {
@@ -228,6 +247,7 @@ final class LegacyMetadata {
 		}
 		Type bufferLost = add(BUFFER_LOST_EVENT_TYPE, "Buffer Lost", 0);
 		bufferLost.fields = new int[] {KIND_FIXED8, KIND_FIXED4, KIND_FIXED4};
+		bufferLost.fieldNames = new String[] {"endTime", "eventThread", "bytesLost"};
 		eventTypes.add(bufferLost);
 	}
 
@@ -260,14 +280,16 @@ final class LegacyMetadata {
 		return PRIMITIVE_KINDS[dataType];
 	}
 
-	private static String readUtf(RecordingStream stream) {
+	private String readUtf(RecordingStream stream) {
 		int length = stream.readRawShort() & 0xFFFF;
 		String s = new String(stream.array(), stream.position(), length, StandardCharsets.UTF_8);
 		stream.skip(length);
+		strings.add(s);
 		return s;
 	}
 
-	private static void skipUtf(RecordingStream stream) {
-		stream.skip(stream.readRawShort() & 0xFFFF);
+	/** Strings not needed for parsing, kept since they are copies a redaction must know about */
+	private void skipUtf(RecordingStream stream) {
+		readUtf(stream);
 	}
 }

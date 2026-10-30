@@ -5,3 +5,14 @@ The streaming chunk parser in se.hirt.jfr.redact.parser was inspired by the
 streaming JFR chunk parser in the OpenJDK JDK Mission Control project,
 https://github.com/openjdk/jmc, available under the Universal Permissive
 License v 1.0 or the BSD 3-Clause License.
+
+The test recordings in src/test/resources/recordings come from the test resources of
+the OpenJDK JDK Mission Control project, https://github.com/openjdk/jmc, available
+under the Universal Permissive License v 1.0:
+
+  jrockit-r28-transitions.jfr  transitions_R28.2.jfr, with user, host and domain
+                               names and IP addresses replaced using jfr-redact
+                               (see ScrubPersonalData in the test sources)
+  jdk9-basic.jfr               9u0.jfr, with an IP address replaced using jfr-redact
+  jdk9-weblogic-medrec.jfr     wls-medrec-jdk9.jfr
+  jdk21-jmc.jfr                jdk21.jfr

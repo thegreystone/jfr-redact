@@ -3,8 +3,9 @@ target/
 *.class
 dependency-reduced-pom.xml
 
-# Profiling output
+# Profiling output, except the test recordings
 *.jfr
+!src/test/resources/recordings/*.jfr
 
 # IDEs
 .idea/

@@ -85,6 +85,8 @@ public final class ChunkTypes {
 		public final int keyKind;
 		/** The field programs, in serialization order */
 		public int[] fields;
+		/** The field names, parallel to {@link #fields} */
+		public String[] fieldNames;
 		/** True if a value of this type can contain an inlined (not constant pool referenced) string */
 		public boolean containsStrings;
 		/**
@@ -110,6 +112,8 @@ public final class ChunkTypes {
 	public final boolean legacy;
 	/** The index of the {@value #STRING_TYPE} type, or -1 if not declared */
 	public final int stringTypeIndex;
+	/** All strings stored in the metadata, may contain nulls */
+	private String[] metadataStrings = new String[0];
 	private final Type[] types;
 	private final IdLookup eventTypes;
 	/** The event type lookup array, if dense, to keep the per event lookup cheap */
@@ -158,7 +162,21 @@ public final class ChunkTypes {
 		for (int i = 0; i < classes.size(); i++) {
 			compileFields(classes.get(i), types.get(i), byId);
 		}
-		return new ChunkTypes(false, types, types, types);
+		ChunkTypes chunkTypes = new ChunkTypes(false, types, types, types);
+		chunkTypes.metadataStrings = metadata.getStrings();
+		return chunkTypes;
+	}
+
+	/**
+	 * @return all strings stored in the chunk metadata, such as type and field names, labels and
+	 *         descriptions. May contain nulls.
+	 */
+	public String[] getMetadataStrings() {
+		return metadataStrings;
+	}
+
+	void setMetadataStrings(String[] metadataStrings) {
+		this.metadataStrings = metadataStrings;
 	}
 
 	/**
@@ -206,9 +224,11 @@ public final class ChunkTypes {
 
 	private static void compileFields(ClassElement element, Type type, Map<Long, Type> byId) throws IOException {
 		int[] ops = new int[element.fields.size()];
+		String[] names = new String[ops.length];
 		int[] refTargets = null;
 		for (int i = 0; i < ops.length; i++) {
 			FieldElement field = element.fields.get(i);
+			names[i] = field.name;
 			Type fieldType = byId.get(field.typeId);
 			if (fieldType == null) {
 				throw new IOException("Field " + element.name + "." + field.name + " has undeclared type id "
@@ -231,6 +251,7 @@ public final class ChunkTypes {
 			ops[i] = op;
 		}
 		type.fields = ops;
+		type.fieldNames = names;
 		type.refTargets = refTargets;
 	}
 

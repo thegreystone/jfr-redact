@@ -37,6 +37,7 @@ import java.util.List;
 /** The type declarations of a chunk, read from its metadata event. */
 public final class ChunkMetadata {
 	private final List<ClassElement> classes = new ArrayList<>();
+	private final String[] strings;
 
 	/** A type declaration */
 	public static final class ClassElement {
@@ -62,11 +63,19 @@ public final class ChunkMetadata {
 		stream.skipVarint(); // start time
 		stream.skipVarint(); // duration
 		stream.skipVarint(); // metadata id
-		String[] strings = new String[(int) stream.readVarint()];
+		strings = new String[(int) stream.readVarint()];
 		for (int i = 0; i < strings.length; i++) {
 			strings[i] = readString(stream);
 		}
 		readElement(stream, strings, null);
+	}
+
+	/**
+	 * @return the string table of the metadata: names, labels, descriptions and other annotation
+	 *         values. May contain nulls.
+	 */
+	String[] getStrings() {
+		return strings;
 	}
 
 	/**
