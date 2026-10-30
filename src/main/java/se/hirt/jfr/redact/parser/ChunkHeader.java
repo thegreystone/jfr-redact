@@ -28,12 +28,9 @@
  */
 package se.hirt.jfr.redact.parser;
 
-import java.io.IOException;
-
-/** The parts of a chunk header needed for parsing. */
+/** The parts of a JFR 1.0+ chunk header needed for parsing. */
 public final class ChunkHeader {
 	public static final int SIZE = 68;
-	private static final int MAGIC = 0x464C5200; // "FLR\0"
 	private static final int FEATURE_COMPRESSED_INTS = 1;
 
 	public final short major;
@@ -42,13 +39,13 @@ public final class ChunkHeader {
 	public final long metadataOffset;
 	public final boolean compressedInts;
 
-	ChunkHeader(RecordingStream stream) throws IOException {
-		int magic = stream.readRawInt();
-		if (magic != MAGIC) {
-			throw new IOException(String.format("Not a JFR chunk, bad magic 0x%08X", magic));
-		}
-		major = stream.readRawShort();
-		minor = stream.readRawShort();
+	/**
+	 * @param stream
+	 *            positioned right after the magic and version
+	 */
+	ChunkHeader(RecordingStream stream, short major, short minor) {
+		this.major = major;
+		this.minor = minor;
 		size = stream.readRawLong();
 		stream.skip(8); // constant pool offset
 		metadataOffset = stream.readRawLong();

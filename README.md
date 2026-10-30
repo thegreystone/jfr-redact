@@ -9,6 +9,9 @@ times it is seen and only later moves it to the constant pool, so the same strin
 
 ## Status
 
+Supported formats are JFR 0.9 (JDK 7 and 8) and JFR 1.0+ with compressed integers (JDK 11+ and 8u262+). In JFR 0.9
+there is no string constant pool, so strings are always written in full, in events or in constant pool entries.
+
 The first pass, `scan`, walks a recording and reports every string stored in it, with the number of times it is stored
 inline in events and inside constant pools.
 

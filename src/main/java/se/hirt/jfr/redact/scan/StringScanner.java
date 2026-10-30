@@ -36,7 +36,6 @@ import java.nio.ByteOrder;
 import se.hirt.jfr.redact.parser.ChunkParserListener;
 import se.hirt.jfr.redact.parser.ChunkTypes;
 import se.hirt.jfr.redact.parser.ChunkTypes.Type;
-import se.hirt.jfr.redact.parser.ChunkMetadata;
 import se.hirt.jfr.redact.parser.RecordingStream;
 
 /**
@@ -44,8 +43,8 @@ import se.hirt.jfr.redact.parser.RecordingStream;
  * event and how often it is stored inside a constant pool (checkpoint event). References to the
  * string constant pool are not occurrences of the string bytes, and are only counted in total.
  * <p>
- * Strings are keyed by their UTF-8 encoding, so the same string stored as UTF-8, Latin-1 or char
- * array is counted as one.
+ * Strings are keyed by their UTF-8 encoding, so the same string stored as UTF-8, Latin-1, UTF-16 or
+ * char array is counted as one.
  */
 public final class StringScanner implements ChunkParserListener {
 	public static final int INLINE = 0;
@@ -63,7 +62,9 @@ public final class StringScanner implements ChunkParserListener {
 	private final StringCountMap strings = new StringCountMap();
 	private final boolean decodeAllEvents;
 	private ChunkTypes types;
+	private boolean legacy;
 	private byte[] scratch = new byte[1024];
+	private char[] chars = new char[256];
 
 	private long chunkCount;
 	private long eventCount;
@@ -89,15 +90,16 @@ public final class StringScanner implements ChunkParserListener {
 	}
 
 	@Override
-	public void onMetadata(ChunkMetadata metadata) throws IOException {
+	public void onTypes(ChunkTypes types) {
 		chunkCount++;
-		types = new ChunkTypes(metadata);
+		this.types = types;
+		this.legacy = types.legacy;
 	}
 
 	@Override
 	public void onEvent(long typeId, RecordingStream stream, int payloadSize) throws IOException {
 		eventCount++;
-		Type type = types.getById(typeId);
+		Type type = types.getEventType(typeId);
 		if (type == null) {
 			unknownEventCount++;
 			return;
@@ -107,7 +109,11 @@ public final class StringScanner implements ChunkParserListener {
 		}
 		decodedEventCount++;
 		int end = stream.position() + payloadSize;
-		readFields(stream, type.fields, INLINE);
+		if (legacy) {
+			readLegacyFields(stream, type.fields, INLINE);
+		} else {
+			readFields(stream, type.fields, INLINE);
+		}
 		if (stream.position() != end) {
 			misalignedCount++;
 		}
@@ -117,17 +123,24 @@ public final class StringScanner implements ChunkParserListener {
 	public void onCheckpoint(RecordingStream stream, int payloadSize) throws IOException {
 		checkpointCount++;
 		int end = stream.position() + payloadSize;
+		if (legacy) {
+			readLegacyCheckpoint(stream, end);
+		} else {
+			readCheckpoint(stream);
+		}
+		if (stream.position() != end) {
+			misalignedCount++;
+		}
+	}
+
+	private void readCheckpoint(RecordingStream stream) throws IOException {
 		stream.skipVarint(); // start time
 		stream.skipVarint(); // duration
 		stream.skipVarint(); // delta to previous checkpoint
 		stream.skip(1); // checkpoint type
 		int poolCount = (int) stream.readVarint();
 		for (int i = 0; i < poolCount; i++) {
-			long typeId = stream.readVarint();
-			Type type = types.getById(typeId);
-			if (type == null) {
-				throw new IOException("Constant pool for undeclared type id " + typeId);
-			}
+			Type type = getPoolType(stream.readVarint());
 			int count = (int) stream.readVarint();
 			constantCount += count;
 			if (type.isString) {
@@ -143,9 +156,31 @@ public final class StringScanner implements ChunkParserListener {
 				}
 			}
 		}
-		if (stream.position() != end) {
-			misalignedCount++;
+	}
+
+	/** JFR 0.9 has no pool count, the pools simply run to the end of the checkpoint */
+	private void readLegacyCheckpoint(RecordingStream stream, int end) throws IOException {
+		stream.skip(8); // timestamp
+		stream.skip(8); // offset of previous checkpoint
+		while (stream.position() < end) {
+			Type type = getPoolType(stream.readRawInt());
+			int count = stream.readRawInt();
+			constantCount += count;
+			int[] fields = type.fields;
+			int keySize = ChunkTypes.fixedSize(type.keyKind);
+			for (int j = 0; j < count; j++) {
+				stream.skip(keySize);
+				readLegacyFields(stream, fields, CONSTANT_POOL);
+			}
 		}
+	}
+
+	private Type getPoolType(long typeId) throws IOException {
+		Type type = types.getPoolType(typeId);
+		if (type == null) {
+			throw new IOException("Constant pool for undeclared type id " + typeId);
+		}
+		return type;
 	}
 
 	private void readFields(RecordingStream stream, int[] fields, int category) throws IOException {
@@ -154,7 +189,7 @@ public final class StringScanner implements ChunkParserListener {
 				readValue(stream, op, category);
 			} else {
 				int length = (int) stream.readVarint();
-				if ((op & ChunkTypes.KIND_MASK) == ChunkTypes.KIND_BYTE) {
+				if ((op & ChunkTypes.KIND_MASK) == ChunkTypes.KIND_FIXED1) {
 					stream.skip(length);
 				} else {
 					for (int i = 0; i < length; i++) {
@@ -167,13 +202,67 @@ public final class StringScanner implements ChunkParserListener {
 
 	private void readValue(RecordingStream stream, int op, int category) throws IOException {
 		switch (op & ChunkTypes.KIND_MASK) {
-		case ChunkTypes.KIND_BYTE -> stream.skip(1);
+		case ChunkTypes.KIND_FIXED1 -> stream.skip(1);
 		case ChunkTypes.KIND_VARINT -> stream.skipVarint();
-		case ChunkTypes.KIND_FLOAT -> stream.skip(4);
-		case ChunkTypes.KIND_DOUBLE -> stream.skip(8);
+		case ChunkTypes.KIND_FIXED4 -> stream.skip(4);
+		case ChunkTypes.KIND_FIXED8 -> stream.skip(8);
 		case ChunkTypes.KIND_STRING -> readString(stream, category);
 		default -> readFields(stream, types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT).fields, category);
 		}
+	}
+
+	/**
+	 * The JFR 0.9 counterpart of {@link #readFields}, kept separate so that the JFR 1.0+ walk stays
+	 * free of version checks.
+	 */
+	private void readLegacyFields(RecordingStream stream, int[] fields, int category) throws IOException {
+		for (int op : fields) {
+			if ((op & ChunkTypes.ARRAY_FLAG) == 0) {
+				readLegacyValue(stream, op, category);
+			} else {
+				int length = stream.readRawInt();
+				int fixedSize = ChunkTypes.fixedSize(op & ChunkTypes.KIND_MASK);
+				if (fixedSize > 0) {
+					stream.skip(length * fixedSize);
+				} else {
+					for (int i = 0; i < length; i++) {
+						readLegacyValue(stream, op, category);
+					}
+				}
+			}
+		}
+	}
+
+	private void readLegacyValue(RecordingStream stream, int op, int category) throws IOException {
+		switch (op & ChunkTypes.KIND_MASK) {
+		case ChunkTypes.KIND_FIXED1 -> stream.skip(1);
+		case ChunkTypes.KIND_FIXED2 -> stream.skip(2);
+		case ChunkTypes.KIND_FIXED4 -> stream.skip(4);
+		case ChunkTypes.KIND_FIXED8 -> stream.skip(8);
+		case ChunkTypes.KIND_UTF8 -> readUtf8(stream, category);
+		case ChunkTypes.KIND_UTF16 -> readUtf16(stream, category);
+		case ChunkTypes.KIND_STRUCT -> readLegacyFields(stream, types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT).fields,
+				category);
+		default -> throw new IOException("Unexpected field kind " + (op & ChunkTypes.KIND_MASK) + " in JFR 0.9");
+		}
+	}
+
+	private void readUtf8(RecordingStream stream, int category) throws IOException {
+		int length = stream.readRawShort() & 0xFFFF;
+		checkLength(stream, length);
+		add(stream.array(), stream.position(), length, category);
+		stream.skip(length);
+	}
+
+	private void readUtf16(RecordingStream stream, int category) throws IOException {
+		int length = stream.readRawInt();
+		checkLength(stream, length * 2L);
+		char[] chars = ensureChars(length);
+		for (int i = 0; i < length; i++) {
+			chars[i] = (char) stream.readRawShort();
+		}
+		int utf8Length = charsToUtf8(chars, length);
+		add(scratch, 0, utf8Length, category);
 	}
 
 	private void readString(RecordingStream stream, int category) throws IOException {
@@ -201,14 +290,22 @@ public final class StringScanner implements ChunkParserListener {
 			if (isAscii(array, offset, length)) {
 				add(array, offset, length, category);
 			} else {
-				add(scratch, 0, latin1ToUtf8(array, offset, length), category);
+				int utf8Length = latin1ToUtf8(array, offset, length);
+				add(scratch, 0, utf8Length, category);
 			}
 			stream.skip(length);
 			return;
 		}
-		case STRING_ENCODING_CHAR_ARRAY:
-			add(scratch, 0, charsToUtf8(stream, readLength(stream)), category);
+		case STRING_ENCODING_CHAR_ARRAY: {
+			int length = readLength(stream);
+			char[] chars = ensureChars(length);
+			for (int i = 0; i < length; i++) {
+				chars[i] = (char) stream.readVarint();
+			}
+			int utf8Length = charsToUtf8(chars, length);
+			add(scratch, 0, utf8Length, category);
 			return;
+		}
 		default:
 			throw new IOException("Unknown string encoding " + encoding + " at offset " + (stream.position() - 1));
 		}
@@ -221,10 +318,14 @@ public final class StringScanner implements ChunkParserListener {
 
 	private static int readLength(RecordingStream stream) throws IOException {
 		long length = stream.readVarint();
-		if (length < 0 || length > stream.limit() - stream.position()) {
-			throw new IOException("Invalid string length " + length + " at offset " + stream.position());
-		}
+		checkLength(stream, length);
 		return (int) length;
+	}
+
+	private static void checkLength(RecordingStream stream, long byteLength) throws IOException {
+		if (byteLength < 0 || byteLength > stream.limit() - stream.position()) {
+			throw new IOException("Invalid string length " + byteLength + " at offset " + stream.position());
+		}
 	}
 
 	private static boolean isAscii(byte[] b, int offset, int length) {
@@ -259,13 +360,13 @@ public final class StringScanner implements ChunkParserListener {
 		return n;
 	}
 
-	private int charsToUtf8(RecordingStream stream, int length) {
+	private int charsToUtf8(char[] chars, int length) {
 		ensureScratch(length * 3);
 		byte[] out = scratch;
 		int n = 0;
 		int highSurrogate = -1;
 		for (int i = 0; i < length; i++) {
-			char c = (char) stream.readVarint();
+			char c = chars[i];
 			if (highSurrogate >= 0) {
 				if (Character.isLowSurrogate(c)) {
 					int codePoint = Character.toCodePoint((char) highSurrogate, c);
@@ -309,6 +410,13 @@ public final class StringScanner implements ChunkParserListener {
 		if (scratch.length < size) {
 			scratch = new byte[Math.max(size, scratch.length * 2)];
 		}
+	}
+
+	private char[] ensureChars(int length) {
+		if (chars.length < length) {
+			chars = new char[Math.max(length, chars.length * 2)];
+		}
+		return chars;
 	}
 
 	public StringCountMap getStrings() {

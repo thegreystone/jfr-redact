@@ -33,9 +33,9 @@ import java.io.IOException;
 /** Receives the contents of each chunk from the {@link StreamingChunkParser}. */
 public interface ChunkParserListener {
 	/**
-	 * Called first for every chunk, with the chunk metadata.
+	 * Called first for every chunk, with the types declared in the chunk metadata.
 	 */
-	void onMetadata(ChunkMetadata metadata) throws IOException;
+	void onTypes(ChunkTypes types) throws IOException;
 
 	/**
 	 * Called for every checkpoint (constant pool) event, in stream order.

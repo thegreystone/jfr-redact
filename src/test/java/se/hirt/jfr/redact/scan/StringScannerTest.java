@@ -50,6 +50,8 @@ class StringScannerTest {
 	private static final String UNIQUE = "a unique string that is only emitted once";
 	private static final String REPEATED = "a repeated string that should end up in the constant pool";
 	private static final String NON_ASCII = "Küssnacht am Rigi, åäö and 😀 emoji";
+	private static final String LONG_LATIN1 = "\u00fc".repeat(3000);
+	private static final String LONG_UTF16 = "\u20ac".repeat(3000);
 
 	@Name("test.Message")
 	@StackTrace(true)
@@ -88,6 +90,8 @@ class StringScannerTest {
 		assertTrue(strings.getTotalCount(repeatedEntry) < 1000, "most occurrences are pool references");
 
 		assertTrue(strings.indexOf(NON_ASCII) >= 0);
+		assertEquals(1, strings.getTotalCount(strings.indexOf(LONG_LATIN1)));
+		assertEquals(1, strings.getTotalCount(strings.indexOf(LONG_UTF16)));
 
 		int methodEntry = strings.indexOf("emitMessages");
 		assertTrue(methodEntry >= 0, "method name from the stack traces");
@@ -146,6 +150,11 @@ class StringScannerTest {
 		MessageEvent nonAscii = new MessageEvent();
 		nonAscii.message = NON_ASCII;
 		nonAscii.commit();
+		for (String s : new String[] {LONG_LATIN1, LONG_UTF16}) {
+			MessageEvent event = new MessageEvent();
+			event.message = s;
+			event.commit();
+		}
 	}
 
 	private static StringScanner scan(Path file, boolean decodeAll) throws Exception {
