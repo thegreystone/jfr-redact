@@ -496,14 +496,20 @@ public final class RuleRedactor implements StringRedactor {
 	}
 
 	/**
+	 * Java identifier characters, including Unicode letters, currency symbols and combining marks.
+	 */
+	private static final String DUMP_CLASS_NAME = "\\p{javaJavaIdentifierPart}+(?:\\.\\p{javaJavaIdentifierPart}+)*";
+
+	/**
 	 * A stack frame in a thread dump, {@code at java.util.List.of(java.base@25/List.java:1)}: the
 	 * class, the method and the location, which is a file name and line, {@code Native Method} or
 	 * {@code Unknown Source}, possibly prefixed by a module
 	 */
 	private static final Pattern DUMP_FRAME = Pattern
-			.compile("\\bat ([\\w$]+(?:\\.[\\w$]+)*)\\.([\\w$<>]+)\\(([^()/]*/)?([^()]*)\\)");
+			.compile("\\bat (" + DUMP_CLASS_NAME + ")\\.([\\p{javaJavaIdentifierPart}<>]+)\\(([^()/]*/)?([^()]*)\\)");
 	/** The file name of a frame location, Foo.java:12 */
-	private static final Pattern DUMP_FILE = Pattern.compile("([\\w$-]+)(\\.\\w+(?::\\d+)?)");
+	private static final Pattern DUMP_FILE = Pattern
+			.compile("([\\p{javaJavaIdentifierPart}-]+)(\\.\\p{javaJavaIdentifierPart}+(?::\\d+)?)");
 
 	/**
 	 * Replaces the part of the text matching the pattern, the first group if any, with its hash.
@@ -567,7 +573,7 @@ public final class RuleRedactor implements StringRedactor {
 	/** Replaces the part of class names matching an expression with a hash */
 	private static final class ClassNameRule implements Rule {
 		/** An object in a thread dump, such as a lock: (a java.util.HashMap) */
-		private static final Pattern OBJECT = Pattern.compile("(\\(a )([\\w$]+(?:\\.[\\w$]+)*)(\\))");
+		private static final Pattern OBJECT = Pattern.compile("(\\(a )(" + DUMP_CLASS_NAME + ")(\\))");
 
 		private final Pattern pattern;
 		private final UnaryOperator<String> hash;

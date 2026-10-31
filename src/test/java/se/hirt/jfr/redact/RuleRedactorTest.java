@@ -33,8 +33,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -450,6 +454,130 @@ class RuleRedactorTest {
 		assertTrue(rewritten.contains("." + method + "("), rewritten);
 		assertTrue(!rewritten.contains("processRecord") && !rewritten.contains("RecordService"), rewritten);
 		assertTrue(rewritten.contains("at java.util.ArrayList.forEach(java.base@25/ArrayList.java:1596)"), rewritten);
+	}
+
+	@Test
+	void hashesUnicodeFrameIdentifiersFilesAndLockClasses() {
+		String[][] identifiers = {{"秘密", "処理", "秘密"}, {"Outer$秘密", "lambda$処理$0", "秘密"}, {"€Secret", "€処理", "€Secret"},
+				{"Cafe\u0301", "me\u0301thod", "Cafe\u0301"},
+				{"\uD801\uDC00Secret", "\uD801\uDC01run", "\uD801\uDC00Secret"}};
+		StringLocation className = new StringLocation("jdk.types.Symbol", "string", true,
+				List.of("java.lang.Class.name"));
+		StringLocation methodName = new StringLocation("jdk.types.Symbol", "string", true,
+				List.of("jdk.types.Method.name"));
+		for (String[] names : identifiers) {
+			RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)")
+					.hashMethodNames(Pattern.quote(names[1])).build();
+			String type = "com.acme." + names[0];
+			String hashedType = redactor.redact(type.replace('.', '/'), List.of(className)).replace('/', '.');
+			String hashedMethod = redactor.redact(names[1], List.of(methodName));
+			String hashedFile = redactor.redact("com/acme/" + names[2], List.of(className))
+					.substring("com/acme/".length());
+			String dump = "\tat " + type + "." + names[1] + "(demo@1/" + names[2] + ".java:42)\n" + "\tat " + type
+					+ ".<init>(" + names[2] + ".java:43)\n" + "\tat " + type + ".<clinit>(" + names[2] + ".java:44)\n"
+					+ "\t- locked <0x00000007> (a " + type + ")\n" + "\tat java.lang.Thread.run(Thread.java:1)\n";
+			String expected = "\tat " + hashedType + "." + hashedMethod + "(demo@1/" + hashedFile + ".java:42)\n"
+					+ "\tat " + hashedType + ".<init>(" + hashedFile + ".java:43)\n" + "\tat " + hashedType
+					+ ".<clinit>(" + hashedFile + ".java:44)\n" + "\t- locked <0x00000007> (a " + hashedType + ")\n"
+					+ "\tat java.lang.Thread.run(Thread.java:1)\n";
+			for (StringLocation location : compositeLocations()) {
+				if (location.isThreadDump()) {
+					assertEquals(expected, redactor.redact(dump, List.of(location)), location + ": " + type);
+				}
+			}
+		}
+	}
+
+	@Test
+	void hashesUnicodeClassAndMethodFramesInRealThreadDumps(@TempDir
+	Path dir) throws Exception {
+		Path input = dir.resolve("unicode-input.jfr");
+		CountDownLatch entered = new CountDownLatch(1);
+		CountDownLatch done = new CountDownLatch(1);
+		Thread worker = new Thread(() -> 秘密.待機(entered, done), "unicode-dump-worker");
+		try (Recording recording = new Recording()) {
+			recording.enable("jdk.ThreadDump").withPeriod(Duration.ofMillis(20));
+			recording.enable(WorkEvent.class);
+			recording.enable(UnicodeClassEvent.class);
+			recording.start();
+			worker.start();
+			assertTrue(entered.await(5, TimeUnit.SECONDS), "the Unicode method must be on the worker's stack");
+			UnicodeClassEvent event = new UnicodeClassEvent();
+			event.value = 秘密.class;
+			event.commit();
+			Thread.sleep(300);
+			recording.stop();
+			recording.dump(input);
+		} finally {
+			done.countDown();
+			worker.join();
+		}
+		String originalClass = 秘密.class.getName();
+		String originalMethod = "待機";
+		List<String> inputDumps = threadDumps(input);
+		assertTrue(inputDumps.stream().anyMatch(text -> text.contains(originalClass + "." + originalMethod + "(")),
+				"the input must genuinely contain the Unicode frame");
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames(Pattern.quote(originalClass))
+				.hashMethodNames(Pattern.quote(originalMethod)).build();
+		String expectedClass = redactor
+				.redact(originalClass.replace('.', '/'), List
+						.of(new StringLocation("jdk.types.Symbol", "string", true, List.of("java.lang.Class.name"))))
+				.replace('/', '.');
+		String expectedMethod = redactor.redact(originalMethod,
+				List.of(new StringLocation("jdk.types.Symbol", "string", true, List.of("jdk.types.Method.name"))));
+		Path output = dir.resolve("unicode-output.jfr");
+		JfrRedactor.redact(input, output, redactor);
+		boolean sawHashedDumpFrame = false;
+		boolean sawHashedClass = false;
+		boolean sawHashedMethod = false;
+		int dumps = 0;
+		for (RecordedEvent event : RecordingFile.readAllEvents(output)) {
+			switch (event.getEventType().getName()) {
+			case "jdk.ThreadDump" -> {
+				String text = event.getString("result");
+				assertTrue(!text.contains(originalClass) && !text.contains(originalMethod + "("), text);
+				sawHashedDumpFrame |= text.contains(expectedClass + "." + expectedMethod + "(");
+				dumps++;
+			}
+			case "test.UnicodeClass" -> {
+				assertEquals(expectedClass, event.getClass("value").getName());
+				sawHashedClass = true;
+			}
+			case "test.Work" -> {
+				for (RecordedFrame frame : event.getStackTrace().getFrames()) {
+					if (frame.getMethod().getType().getName().equals(expectedClass)) {
+						assertEquals(expectedMethod, frame.getMethod().getName());
+						sawHashedMethod = true;
+					}
+				}
+			}
+			default -> {
+			}
+			}
+		}
+		assertEquals(inputDumps.size(), dumps);
+		assertTrue(sawHashedDumpFrame && sawHashedClass && sawHashedMethod,
+				"the dump and the independent class/method constants must contain the same hashes");
+	}
+
+	@Name("test.UnicodeClass")
+	@StackTrace(false)
+	static class UnicodeClassEvent extends Event {
+		Class<?> value;
+	}
+
+	static class 秘密 {
+		static void 待機(CountDownLatch entered, CountDownLatch done) {
+			WorkEvent event = new WorkEvent();
+			event.description = "Unicode frame";
+			event.commit();
+			entered.countDown();
+			try {
+				done.await();
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+		}
 	}
 
 	@Test
