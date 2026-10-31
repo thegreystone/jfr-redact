@@ -62,7 +62,9 @@ public final class Main {
 			inline in events and in constant pools.
 
 			Options:
-			  --top <n>      Number of strings to print, sorted by occurrences (default 20, 0 for none)
+			  --top <n>      Number of strings to print (default 20, 0 for none)
+			  --sort <key>   Sort by occurrences (default), references, inlined or length, highest first
+			                 Length counts Unicode code points; references implies --references
 			  --table        Print the strings as a terminal friendly table: the string in ASCII, cropped
 			                 to 40 characters, its length, its total number of occurrences, how many of
 			                 those are inlined in events, and the references to the constants containing
@@ -101,6 +103,27 @@ public final class Main {
 	private static final String ELLIPSIS = "...";
 	private static final char NON_ASCII_MARKER = '~';
 
+	private enum SortOrder {
+		OCCURRENCES("most common"), REFERENCES("most referenced"), INLINED("most inlined"), LENGTH("longest");
+
+		private final String description;
+
+		SortOrder(String description) {
+			this.description = description;
+		}
+
+		static SortOrder parse(String value) {
+			return switch (value) {
+			case "occurrences" -> OCCURRENCES;
+			case "references" -> REFERENCES;
+			case "inlined" -> INLINED;
+			case "length" -> LENGTH;
+			default -> throw new IllegalArgumentException(
+					"Unknown sort order: " + value + " (expected occurrences, references, inlined or length)");
+			};
+		}
+	}
+
 	private Main() {
 	}
 
@@ -126,10 +149,12 @@ public final class Main {
 		boolean validate = false;
 		boolean table = false;
 		boolean references = false;
+		SortOrder sort = SortOrder.OCCURRENCES;
 		Path recording = null;
 		for (int i = 1; i < args.length; i++) {
 			switch (args[i]) {
 			case "--top" -> top = Integer.parseInt(requireValue(args, ++i));
+			case "--sort" -> sort = SortOrder.parse(requireValue(args, ++i));
 			case "--out" -> outFile = Path.of(requireValue(args, ++i));
 			case "--validate" -> validate = true;
 			case "--table" -> table = true;
@@ -150,16 +175,16 @@ public final class Main {
 		}
 
 		long start = System.nanoTime();
-		StringScanner scanner = new StringScanner(validate, references || table);
+		StringScanner scanner = new StringScanner(validate, references || table || sort == SortOrder.REFERENCES);
 		new StreamingChunkParser().parse(recording, scanner);
 		long elapsedNanos = System.nanoTime() - start;
 
 		printSummary(out, recording, scanner, elapsedNanos);
 		StringCountMap strings = scanner.getStrings();
-		Integer[] sorted = sortByOccurrences(strings);
+		Integer[] sorted = sortStrings(strings, sort);
 		if (top > 0) {
 			if (table) {
-				printTable(out, strings, sorted, top);
+				printTable(out, strings, sorted, top, sort);
 			} else {
 				printTop(out, strings, sorted, top);
 			}
@@ -287,10 +312,24 @@ public final class Main {
 		}
 	}
 
-	private static Integer[] sortByOccurrences(StringCountMap strings) {
+	private static Integer[] sortStrings(StringCountMap strings, SortOrder sort) {
 		Integer[] entries = new Integer[strings.size()];
 		Arrays.setAll(entries, i -> i);
-		Arrays.sort(entries, Comparator.comparingLong((Integer e) -> strings.getTotalCount(e)).reversed());
+		Comparator<Integer> occurrences = Comparator.comparingLong((Integer e) -> strings.getTotalCount(e)).reversed();
+		Comparator<Integer> order = switch (sort) {
+		case OCCURRENCES -> occurrences;
+		case REFERENCES -> Comparator.comparingLong((Integer e) -> strings.getReferenceCount(e)).reversed();
+		case INLINED -> Comparator.comparingLong((Integer e) -> strings.getCount(e, StringScanner.INLINE)).reversed();
+		case LENGTH -> {
+			int[] lengths = new int[strings.size()];
+			for (int e = 0; e < lengths.length; e++) {
+				String value = strings.getString(e);
+				lengths[e] = value.codePointCount(0, value.length());
+			}
+			yield Comparator.comparingInt((Integer e) -> lengths[e]).reversed();
+		}
+		};
+		Arrays.sort(entries, sort == SortOrder.OCCURRENCES ? order : order.thenComparing(occurrences));
 		return entries;
 	}
 
@@ -304,7 +343,8 @@ public final class Main {
 		}
 	}
 
-	private static void printTable(PrintStream out, StringCountMap strings, Integer[] sorted, int top) {
+	private static void printTable(PrintStream out, StringCountMap strings, Integer[] sorted, int top,
+			SortOrder sort) {
 		String format = "%-" + TABLE_STRING_WIDTH + "s %10s %12s %12s %12s%n";
 		out.println();
 		out.printf(format, "String", "Length", "Occurrences", "Inlined", "References");
@@ -320,10 +360,11 @@ public final class Main {
 					String.format("%,d", strings.getReferenceCount(e)));
 		}
 		out.println();
+		String order = sort.description;
 		if (shown == sorted.length) {
-			out.printf("Showing all %,d strings, most common first.%n", sorted.length);
+			out.printf("Showing all %,d strings, %s first.%n", sorted.length, order);
 		} else {
-			out.printf("Showing the top %,d most common strings of %,d.%n", shown, sorted.length);
+			out.printf("Showing the top %,d %s strings of %,d.%n", shown, order, sorted.length);
 		}
 	}
 

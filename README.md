@@ -16,15 +16,36 @@ The first pass, `scan`, walks a recording and reports every string stored in it,
 inline in events and inside constant pools.
 
 ```
-jfr-redact scan [--top <n>] [--table] [--references] [--out <file.tsv>] [--validate] <recording.jfr>
+jfr-redact scan [--top <n>] [--table] [--sort <occurrences|references|inlined|length>] [--references] [--out <file.tsv>] [--validate] <recording.jfr>
 ```
 
 `--references` also counts the direct references to the constants containing each string, from events and from other
 constants (for example a method constant referring to its name). This decodes nearly all events, roughly 1.5-2x the
 cost of a plain scan, and is implied by `--table`. Without it, the scan is unaffected.
 
-`scripts/demo.sh <recording.jfr> [n]` shows the top strings as a table, using the native image if built, otherwise
-the jar.
+Strings are sorted in descending order by stored occurrences by default. `--sort` selects the ranking for both the
+printed strings and TSV output, with occurrences breaking ties:
+
+- `occurrences`: total stored occurrences (the default).
+- `references`: direct references to the constants containing each string; implies `--references`.
+- `inlined`: occurrences stored inline in events, matching the table's Inlined column.
+- `length`: Unicode code point count, matching the table's Length column; longest first.
+
+For example:
+
+```
+jfr-redact scan --table --sort references --top 30 recording.jfr
+```
+
+`scripts/demo.sh [recording.jfr|-] [n] [occurrences|references|inlined|length]` shows the top strings as a table. On Windows,
+use `scripts\demo.bat` with the same arguments. The scripts use the native image if built, otherwise the jar. If neither
+is available, they build the jar with Maven.
+With no recording supplied, it uses the included WebLogic (WLDF) MedRec recording,
+`src/test/resources/recordings/jdk9-weblogic-medrec.jfr`. The default number of strings is 30.
+To sort the included recording by references, start with the row count: `scripts/demo.sh 30 references`, or
+`scripts\demo.bat 30 references` on Windows, including PowerShell. You can also use `-` explicitly in place of a
+recording path: `scripts\demo.bat - 30 references`.
+Replace `references` with `inlined` or `length` to sort by either of those columns.
 
 ## Redaction
 
