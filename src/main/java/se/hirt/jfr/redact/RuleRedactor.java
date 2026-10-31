@@ -108,9 +108,11 @@ import javax.crypto.spec.SecretKeySpec;
  * }</pre>
  *
  * Some strings are documents embedding other strings, see {@link StringLocation#isComposite()}.
- * Instead of the first matching rule, every rule rewrites its part of them: thread names are hashed
- * the same way as elsewhere, in the headers and lock owners of thread dumps and in the
- * {@code Thread Name:} of old object descriptions, and packages are renamed in class names.
+ * Rules process these strings in order. Specialized rules rewrite their embedded values: thread
+ * names are hashed the same way as elsewhere, in the headers and lock owners of thread dumps and in
+ * the {@code Thread Name:} of old object descriptions, and packages are renamed in class names.
+ * Glob and location-based rules match the whole current text, including preceding rewrites, and the
+ * first matching whole-string rule decides. Location predicates see all locations of the value.
  * <p>
  * Since a decision applies to every occurrence of a string, a rule matching a string at one
  * location replaces it everywhere. For example, hashing the thread name {@code main} also renames
@@ -131,9 +133,12 @@ public final class RuleRedactor implements StringRedactor {
 	private interface Rule {
 		String apply(String value, List<StringLocation> locations);
 
-		/** Rewrites the parts of a composite string the rule applies to */
+		/**
+		 * Rewrites embedded values, or returns {@code null} to apply the rule to the whole string
+		 * instead.
+		 */
 		default String rewriteComposite(String text, StringLocation location) {
-			return text;
+			return null;
 		}
 	}
 
@@ -271,7 +276,15 @@ public final class RuleRedactor implements StringRedactor {
 			if (location.isComposite()) {
 				String text = value;
 				for (Rule rule : rules) {
-					text = rule.rewriteComposite(text, location);
+					String rewritten = rule.rewriteComposite(text, location);
+					if (rewritten != null) {
+						text = rewritten;
+					} else {
+						String replacement = rule.apply(text, locations);
+						if (replacement != null) {
+							return replacement;
+						}
+					}
 				}
 				return text;
 			}

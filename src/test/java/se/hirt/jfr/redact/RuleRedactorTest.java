@@ -111,6 +111,146 @@ class RuleRedactorTest {
 	}
 
 	@Test
+	void replacesCompositeStringsWithGlobs() {
+		RuleRedactor all = RuleRedactor.builder().replace("*", "X").build();
+		RuleRedactor matching = RuleRedactor.builder().replace("*secret*", "<REDACTED>").build();
+		RuleRedactor preserving = RuleRedactor.builder().replace("*secret*", "*hidden*").build();
+		RuleRedactor nonmatching = RuleRedactor.builder().replace("*not-present*", "X").build();
+		for (StringLocation location : compositeLocations()) {
+			String text = compositeText(location);
+			List<StringLocation> locations = List.of(location);
+			assertEquals("X", all.redact(text, locations), location.toString());
+			assertEquals("X", all.redact("", locations), location.toString());
+			assertEquals("<REDACTED>", matching.redact(text, locations), location.toString());
+			assertEquals(text.replace("secret", "hidden"), preserving.redact(text, locations), location.toString());
+			assertEquals(text, nonmatching.redact(text, locations), location.toString());
+			assertEquals("<EXACT>", RuleRedactor.builder().replace(text, "<EXACT>").build().redact(text, locations));
+		}
+	}
+
+	@Test
+	void replacesCompositeStringsAtMatchingLocations() {
+		RuleRedactor matching = RuleRedactor.builder()
+				.replaceIf(StringLocation::isComposite, text -> text.replace("secret", "hidden")).build();
+		RuleRedactor nonmatching = RuleRedactor.builder()
+				.replaceIf(location -> location.getOwner().equals("absent"), text -> "X").build();
+		for (StringLocation location : compositeLocations()) {
+			String text = compositeText(location);
+			assertEquals(text.replace("secret", "hidden"), matching.redact(text, List.of(location)),
+					location.toString());
+			assertEquals(text, nonmatching.redact(text, List.of(location)), location.toString());
+		}
+	}
+
+	@Test
+	void compositeStringsRetainEveryLocationForPredicates() {
+		StringLocation ordinary = new StringLocation("test.Work", "description", false, List.of());
+		RuleRedactor redactor = RuleRedactor.builder().replaceIf(location -> location == ordinary, text -> "X").build();
+		for (StringLocation composite : compositeLocations()) {
+			String text = compositeText(composite);
+			assertEquals("X", redactor.redact(text, List.of(composite, ordinary)));
+			assertEquals("X", redactor.redact(text, List.of(ordinary, composite)));
+			assertEquals(text, redactor.redact(text, List.of(composite)));
+		}
+	}
+
+	@Test
+	void nonmatchingGenericRulesPreserveSpecializedCompositeRewrites() {
+		RuleRedactor specialized = RuleRedactor.builder().hashThreadNames().renamePackage("java.util", "utilz").build();
+		RuleRedactor combined = RuleRedactor.builder().replace("*not-present*", "X").hashThreadNames()
+				.renamePackage("java.util", "utilz")
+				.replaceIf(location -> location.getOwner().equals("absent"), text -> "X").build();
+		for (StringLocation location : compositeLocations()) {
+			String text = compositeText(location);
+			String expected = specialized.redact(text, List.of(location));
+			assertTrue(expected.contains("Thread-"), expected);
+			assertTrue(!expected.contains("secret"), expected);
+			if (location.isThreadDump()) {
+				assertTrue(expected.contains("utilz.ArrayList"), expected);
+			}
+			assertEquals(expected, combined.redact(text, List.of(location)), location.toString());
+		}
+	}
+
+	@Test
+	void firstMatchingWholeCompositeRuleWinsEvenWhenItKeepsTheValue() {
+		RuleRedactor first = RuleRedactor.builder().replace("*secret*", "first").replace("*", "second").build();
+		RuleRedactor identityPredicate = RuleRedactor.builder().replaceIf(StringLocation::isComposite, text -> text)
+				.replace("*", "second").build();
+		for (StringLocation location : compositeLocations()) {
+			String text = compositeText(location);
+			List<StringLocation> locations = List.of(location);
+			assertEquals("first", first.redact(text, locations), location.toString());
+			assertEquals(text, identityPredicate.redact(text, locations), location.toString());
+			RuleRedactor identityGlob = RuleRedactor.builder().replace(text, text).replace("*", "second").build();
+			assertEquals(text, identityGlob.redact(text, locations), location.toString());
+		}
+	}
+
+	@Test
+	void wholeCompositeRulesSeePrecedingSpecializedRewrites() {
+		RuleRedactor hashes = RuleRedactor.builder().hashThreadNames().build();
+		String hashed = hashes.redact("secret",
+				List.of(new StringLocation("java.lang.Thread", "javaName", true, List.of())));
+		RuleRedactor matchingHash = RuleRedactor.builder().hashThreadNames().replace("*" + hashed + "*", "X").build();
+		RuleRedactor matchingOriginal = RuleRedactor.builder().hashThreadNames().replace("*secret*", "X").build();
+		for (StringLocation location : compositeLocations()) {
+			String text = compositeText(location);
+			List<StringLocation> locations = List.of(location);
+			assertEquals("X", matchingHash.redact(text, locations), location.toString());
+			assertEquals(hashes.redact(text, locations), matchingOriginal.redact(text, locations), location.toString());
+		}
+	}
+
+	@Test
+	void packageRulesRewriteEveryCompositeOccurrenceEvenAtTheStart() {
+		RuleRedactor redactor = RuleRedactor.builder().renamePackage("java.util", "utilz").build();
+		for (StringLocation location : compositeLocations()) {
+			if (location.isOldObjectDescription()) {
+				assertEquals("utilz.List and utilz.Set",
+						redactor.redact("java.util.List and java.util.Set", List.of(location)), location.toString());
+			}
+		}
+	}
+
+	@Test
+	void blanketReplacementRemovesBundledThreadDumps(@TempDir
+	Path dir) throws Exception {
+		Path input = Path.of(RuleRedactorTest.class.getResource("/recordings/jdk21-jmc.jfr").toURI());
+		Path output = dir.resolve("redacted.jfr");
+		List<String> before = threadDumps(input);
+		assertEquals(2, before.size(), "the bundled fixture must exercise both thread dumps");
+		assertTrue(before.stream().allMatch(text -> text.contains("Full thread dump")));
+		JfrRedactor.redact(input, output, RuleRedactor.builder().replace("*", "X").build());
+		assertEquals(List.of("X", "X"), threadDumps(output), "the JDK reader must see only the replacements");
+	}
+
+	private static List<StringLocation> compositeLocations() {
+		return List.of(new StringLocation("jdk.ThreadDump", "result", false, List.of()),
+				new StringLocation("vm/runtime/thread_dump", "result", false, List.of()),
+				new StringLocation("jdk.types.OldObject", "description", true, List.of()),
+				new StringLocation("jdk.types.OldObjectGcRoot", "description", true, List.of()));
+	}
+
+	private static String compositeText(StringLocation location) {
+		return location.isThreadDump() ? "\"secret\" #1 prio=5\n\tat java.util.ArrayList.run(ArrayList.java:1)\n"
+				: "Thread Name: secret";
+	}
+
+	private static List<String> threadDumps(Path file) throws Exception {
+		List<String> dumps = new ArrayList<>();
+		try (RecordingFile recording = new RecordingFile(file)) {
+			while (recording.hasMoreEvents()) {
+				RecordedEvent event = recording.readEvent();
+				if (event.getEventType().getName().equals("jdk.ThreadDump")) {
+					dumps.add(event.getString("result"));
+				}
+			}
+		}
+		return dumps;
+	}
+
+	@Test
 	void hashesThreadNamesStably() {
 		StringLocation legacyThreadName = new StringLocation("Thread", "name", true, List.of());
 		List<StringLocation> locations = List.of(legacyThreadName);

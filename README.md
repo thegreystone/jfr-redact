@@ -64,6 +64,10 @@ Input and output must be different files, including through hard links or symbol
 a temporary file beside the output and atomically replaces it after successful processing. Failed processing leaves
 an existing output untouched; the output filesystem must support atomic replacement.
 
+Glob replacements (`--replace`) also apply to whole thread dumps and old-object descriptions. Specialized rules
+rewrite embedded names in rule order; the first matching whole-string rule replaces the current value and stops
+further processing. The same behavior applies to `RuleRedactor.Builder.replaceIf`.
+
 ```
 jfr-redact redact --match <regex> [--match <regex>]... [--replacement <text>] <recording.jfr> <redacted.jfr>
 ```
