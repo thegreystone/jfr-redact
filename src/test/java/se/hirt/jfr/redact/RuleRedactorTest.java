@@ -430,6 +430,87 @@ class RuleRedactorTest {
 	}
 
 	@Test
+	void hashesObjectArrayClassesLikeComponentsAndDescriptors() {
+		List<RuleRedactor> redactors = List.of(
+				RuleRedactor.builder().hashClassNames("^com\\.acme\\.SecretService$").build(),
+				RuleRedactor.builder().hashClassNames("com\\.acme\\.(Secret)").build(),
+				RuleRedactor.builder().hashClassNames("^com\\.acme\\.(SecretService)$", new byte[] {1, 2, 3}).build());
+		List<StringLocation> classLocations = List.of(
+				new StringLocation("jdk.types.Symbol", "string", true, List.of("java.lang.Class.name")),
+				new StringLocation("Symbol", "string", true, List.of("Class.name")));
+		StringLocation descriptor = new StringLocation("jdk.types.Symbol", "string", true,
+				List.of("jdk.types.Method.descriptor"));
+		String component = "com/acme/SecretService";
+		for (RuleRedactor redactor : redactors) {
+			for (StringLocation location : classLocations) {
+				String hashed = redactor.redact(component, List.of(location));
+				assertTrue(!hashed.equals(component));
+				for (String prefix : List.of("[L", "[[L", "[[[L")) {
+					String array = prefix + component + ";";
+					assertEquals(prefix + hashed + ";", redactor.redact(array, List.of(location)));
+					assertEquals("(" + prefix + hashed + ";)L" + hashed + ";",
+							redactor.redact("(" + array + ")L" + component + ";", List.of(descriptor)));
+					assertEquals(array, redactor.redact(array), "unclassified strings must remain unchanged");
+				}
+				assertEquals("[[Lorg/other/Plain;", redactor.redact("[[Lorg/other/Plain;", List.of(location)));
+			}
+		}
+	}
+
+	@Test
+	void keepsPrimitiveArrayClassesEvenWhenEveryClassNameMatches() {
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("(.*)").build();
+		StringLocation className = new StringLocation("jdk.types.Symbol", "string", true,
+				List.of("java.lang.Class.name"));
+		for (String type : List.of("B", "C", "D", "F", "I", "J", "S", "Z")) {
+			for (String dimensions : List.of("[", "[[")) {
+				String array = dimensions + type;
+				assertEquals(array, redactor.redact(array, List.of(className)));
+			}
+		}
+	}
+
+	@Test
+	void hashesRecordedObjectArrayClassNamesWithoutChangingTheirDescriptors(@TempDir
+	Path dir) throws Exception {
+		Path input = dir.resolve("array-input.jfr");
+		List<Class<?>> types = List.of(RuleRedactorTest.class, RuleRedactorTest[].class, RuleRedactorTest[][].class,
+				int[].class, boolean[][].class, String[].class);
+		try (Recording recording = new Recording()) {
+			recording.enable(UnicodeClassEvent.class);
+			recording.start();
+			for (Class<?> type : types) {
+				UnicodeClassEvent event = new UnicodeClassEvent();
+				event.value = type;
+				event.commit();
+			}
+			recording.stop();
+			recording.dump(input);
+		}
+		assertEquals(types.stream().map(Class::getName).toList(), recordedClassValues(input),
+				"the input must contain the component and every tested array class");
+		RuleRedactor redactor = RuleRedactor.builder()
+				.hashClassNames("^" + Pattern.quote(RuleRedactorTest.class.getName()) + "$").build();
+		String component = redactor
+				.redact(RuleRedactorTest.class.getName().replace('.', '/'), List
+						.of(new StringLocation("jdk.types.Symbol", "string", true, List.of("java.lang.Class.name"))))
+				.replace('/', '.');
+		assertTrue(!component.equals(RuleRedactorTest.class.getName()));
+		Path output = dir.resolve("array-output.jfr");
+		JfrRedactor.redact(input, output, redactor);
+		assertEquals(
+				List.of(component, "[L" + component + ";", "[[L" + component + ";", "[I", "[[Z", "[Ljava.lang.String;"),
+				recordedClassValues(output),
+				"the JDK reader must see matching hashes with array dimensions and semicolons preserved");
+	}
+
+	private static List<String> recordedClassValues(Path file) throws Exception {
+		return RecordingFile.readAllEvents(file).stream()
+				.filter(event -> event.getEventType().getName().equals("test.UnicodeClass"))
+				.map(event -> event.getClass("value").getName()).toList();
+	}
+
+	@Test
 	void hashesMethodNames() {
 		RuleRedactor redactor = RuleRedactor.builder().hashMethodNames("(processRecord)").build();
 		StringLocation methodName = new StringLocation("jdk.types.Symbol", "string", true,

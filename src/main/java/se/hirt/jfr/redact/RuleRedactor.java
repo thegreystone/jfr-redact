@@ -208,9 +208,11 @@ public final class RuleRedactor implements StringRedactor {
 		 * as {@code com.acme.secret.Foo}, and the part replaced is the first capture group if the
 		 * expression has one, or else the whole match. For example, {@code com\.acme\.(.*)} turns
 		 * {@code com.acme.secret.Foo} into {@code com.acme.<hash>}. The class name is replaced
-		 * wherever it occurs: in internal form ({@code com/acme/secret/Foo}), in method descriptors
-		 * and in thread dumps. The same text always gets the same hash. Package names are not class
-		 * names, so they are not affected.
+		 * wherever it occurs: in internal form ({@code com/acme/secret/Foo}), in array class names
+		 * ({@code [Lcom/acme/secret/Foo;}), in method descriptors and in thread dumps. Array
+		 * prefixes and descriptor delimiters are preserved; primitive arrays are unchanged. The
+		 * same text always gets the same hash. Package names are not class names, so they are not
+		 * affected.
 		 */
 		public Builder hashClassNames(String regex) {
 			rules.add(new ClassNameRule(Pattern.compile(regex), text -> base64(digest("SHA-256", null, text))));
@@ -587,7 +589,7 @@ public final class RuleRedactor implements StringRedactor {
 		public String apply(String value, List<StringLocation> locations) {
 			for (StringLocation location : locations) {
 				if (location.isClassName()) {
-					return renameInternal(value);
+					return value.startsWith("[") ? renameInDescriptor(value) : renameInternal(value);
 				}
 				if (location.isMethodDescriptor()) {
 					return renameInDescriptor(value);
