@@ -57,6 +57,7 @@ final class LocationCollector implements ChunkParserListener {
 	private final StringDecoder decoder = new StringDecoder();
 	private ChunkTypes types;
 	private boolean legacy;
+	private long chunkCount;
 
 	/** Field locations: owner, path and whether in a constant, interned over the whole recording */
 	private final Map<String, Integer> fieldLocationIds = new HashMap<>();
@@ -276,6 +277,10 @@ final class LocationCollector implements ChunkParserListener {
 		return strings;
 	}
 
+	long getChunkCount() {
+		return chunkCount;
+	}
+
 	/**
 	 * @return per string entry, the distinct locations of the string
 	 */
@@ -329,6 +334,7 @@ final class LocationCollector implements ChunkParserListener {
 
 	@Override
 	public void onTypes(ChunkTypes types) {
+		chunkCount++;
 		this.types = types;
 		this.legacy = types.legacy;
 		types.prepareReferences();

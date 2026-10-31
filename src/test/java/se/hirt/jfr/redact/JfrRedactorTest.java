@@ -49,6 +49,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import jdk.jfr.Configuration;
@@ -219,14 +220,26 @@ class JfrRedactorTest {
 		return strings;
 	}
 
-	@Test
-	void keepingEverythingCopiesTheRecording(@TempDir
+	@ParameterizedTest
+	@CsvSource({"jdk9-basic.jfr, 1, false", "jdk9-basic.jfr, 1, true", "jdk9-weblogic-medrec.jfr, 2, false",
+			"jdk9-weblogic-medrec.jfr, 2, true"})
+	void keepingEverythingCopiesTheRecording(String name, int chunks, boolean equalNewString, @TempDir
 	Path dir) throws Exception {
-		Path input = record(dir.resolve("input.jfr"));
+		Path input = fixture(name);
+		byte[] original = Files.readAllBytes(input);
 		Path output = dir.resolve("output.jfr");
-		RedactionResult result = JfrRedactor.redact(input, output, (value, locations) -> value);
+		RedactionResult result = JfrRedactor.redact(input, output,
+				(value, locations) -> equalNewString ? new String(value) : value);
+		assertEquals(chunks, result.chunkCount());
+		assertTrue(result.stringCount() > 0);
 		assertEquals(0, result.redactedStringCount());
-		assertArrayEquals(Files.readAllBytes(input), Files.readAllBytes(output));
+		assertEquals(0, result.rewrittenChunkCount());
+		assertEquals(0, result.rewrittenEventCount());
+		assertEquals(0, result.rewrittenCheckpointCount());
+		assertEquals(0, result.replacedOccurrenceCount());
+		assertEquals(List.of(), result.redactedInMetadata());
+		assertArrayEquals(original, Files.readAllBytes(input));
+		assertArrayEquals(original, Files.readAllBytes(output));
 	}
 
 	@Test

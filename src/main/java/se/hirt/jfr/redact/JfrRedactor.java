@@ -107,7 +107,7 @@ public final class JfrRedactor {
 			RedactionResult result;
 			if (redactedCount == 0) {
 				Files.copy(input, temporary.path, StandardCopyOption.REPLACE_EXISTING);
-				result = new RedactionResult(strings.size(), 0, 0, 0, 0, 0, 0, List.of());
+				result = new RedactionResult(strings.size(), 0, collector.getChunkCount(), 0, 0, 0, 0, List.of());
 			} else {
 				ChunkRewriter rewriter = new ChunkRewriter(changedStrings, changedReplacements.toArray(new String[0]),
 						collector.getChangedCheckpoints(changed), changedEventTypes, changedPoolTypes);
