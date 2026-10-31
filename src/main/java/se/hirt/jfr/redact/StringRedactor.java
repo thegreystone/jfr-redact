@@ -42,7 +42,7 @@ import java.util.List;
 public interface StringRedactor {
 	/**
 	 * @param value
-	 *            the string
+	 *            the original Java string, including any unpaired UTF-16 surrogates
 	 * @param locations
 	 *            the distinct locations where the string is stored
 	 * @return {@code value} to keep the string, or the non-null replacement

@@ -407,7 +407,7 @@ public final class Main {
 		}
 	}
 
-	private static String escape(String s) {
+	static String escape(String s) {
 		StringBuilder sb = null;
 		for (int i = 0; i < s.length(); i++) {
 			char c = s.charAt(i);
@@ -416,7 +416,12 @@ public final class Main {
 			case '\n' -> "\\n";
 			case '\r' -> "\\r";
 			case '\\' -> "\\\\";
-			default -> null;
+			default -> {
+				boolean unpaired = Character.isHighSurrogate(c)
+						? i + 1 == s.length() || !Character.isLowSurrogate(s.charAt(i + 1))
+						: Character.isLowSurrogate(c) && (i == 0 || !Character.isHighSurrogate(s.charAt(i - 1)));
+				yield unpaired ? String.format("\\u%04X", (int) c) : null;
+			}
 			};
 			if (replacement != null && sb == null) {
 				sb = new StringBuilder(s.length() + 16).append(s, 0, i);

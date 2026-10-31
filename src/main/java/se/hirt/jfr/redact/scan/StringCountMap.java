@@ -31,13 +31,15 @@ package se.hirt.jfr.redact.scan;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
-import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
+import se.hirt.jfr.redact.internal.Utf8;
+
 /**
- * Open addressing hash map from UTF-8 encoded strings to occurrence counts per category. Keys are
- * looked up directly from a source byte range and only copied into an internal arena on first
- * insertion, so counting an already known string does not allocate.
+ * Open addressing hash map from lossless UTF-8 string keys to occurrence counts per category.
+ * Unpaired UTF-16 surrogates use their three-byte encoding (WTF-8). Keys are looked up directly
+ * from a source byte range and only copied into an internal arena on first insertion, so counting
+ * an already known string does not allocate.
  */
 public final class StringCountMap {
 	public static final int CATEGORIES = 2;
@@ -63,7 +65,7 @@ public final class StringCountMap {
 	private int arenaUsed;
 
 	/**
-	 * Counts one occurrence of the UTF-8 encoded string in {@code source[offset, offset + length)}.
+	 * Counts one occurrence of the lossless UTF-8 key in {@code source[offset, offset + length)}.
 	 *
 	 * @return the entry index of the string
 	 */
@@ -90,13 +92,13 @@ public final class StringCountMap {
 	 * @return the entry index of the string, or -1 if not present
 	 */
 	public int indexOf(String s) {
-		byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+		byte[] bytes = Utf8.encode(s);
 		return find(bytes, 0, bytes.length);
 	}
 
 	/**
-	 * @return the entry index of the UTF-8 encoded string in
-	 *         {@code source[offset, offset + length)}, or -1 if not present
+	 * @return the entry index of the lossless UTF-8 key in {@code source[offset, offset + length)},
+	 *         or -1 if not present
 	 */
 	public int find(byte[] source, int offset, int length) {
 		int hash = hash(source, offset, length);
@@ -113,7 +115,7 @@ public final class StringCountMap {
 	}
 
 	/**
-	 * @return the UTF-8 encoding of the string
+	 * @return the internal lossless UTF-8 key, which can contain WTF-8 surrogate encodings
 	 */
 	public byte[] getBytes(int entry) {
 		return Arrays.copyOfRange(arena, offsets[entry], offsets[entry] + lengths[entry]);
@@ -124,7 +126,7 @@ public final class StringCountMap {
 	}
 
 	public String getString(int entry) {
-		return new String(arena, offsets[entry], lengths[entry], StandardCharsets.UTF_8);
+		return Utf8.decode(arena, offsets[entry], lengths[entry]);
 	}
 
 	public long getCount(int entry, int category) {

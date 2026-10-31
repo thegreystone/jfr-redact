@@ -68,6 +68,11 @@ Glob replacements (`--replace`) also apply to whole thread dumps and old-object 
 rewrite embedded names in rule order; the first matching whole-string rule replaces the current value and stops
 further processing. The same behavior applies to `RuleRedactor.Builder.replaceIf`.
 
+Strings are decoded according to their recording encoding, preserving UTF-16 code units, including unpaired
+surrogates in char-array values. Replacements containing unpaired surrogates use JFR's char-array encoding where
+available. Fixed UTF-8 fields in JFR 0.9 reject replacements they cannot represent. TSV output escapes unpaired
+surrogates as `\uXXXX` to preserve them in UTF-8 text.
+
 ```
 jfr-redact redact --match <regex> [--match <regex>]... [--replacement <text>] <recording.jfr> <redacted.jfr>
 ```

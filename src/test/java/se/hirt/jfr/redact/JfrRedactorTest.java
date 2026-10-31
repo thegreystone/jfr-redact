@@ -57,6 +57,9 @@ import jdk.jfr.Recording;
 import jdk.jfr.StackTrace;
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordingFile;
+import se.hirt.jfr.redact.parser.StreamingChunkParser;
+import se.hirt.jfr.redact.scan.StringCountMap;
+import se.hirt.jfr.redact.scan.StringScanner;
 
 class JfrRedactorTest {
 	private static final String SECRET = "jdbc:secret://db.internal.example.com:5432/patients";
@@ -149,6 +152,97 @@ class JfrRedactorTest {
 		assertArrayEquals(Files.readAllBytes(input), Files.readAllBytes(output));
 	}
 
+	@Test
+	void preservesExactJavaStringsWhenRedactingSurrogates(@TempDir
+	Path dir) throws Exception {
+		String prefix = "exact-string-secret-";
+		List<String> secrets = List.of(prefix + "middle-\uD800-tail", prefix + "middle-\uDC00-tail",
+				prefix + "end-\uD800", prefix + "end-\uDC00", "\uD800" + prefix + "start", "\uDC00" + prefix + "start");
+		List<String> values = new ArrayList<>(secrets);
+		values.addAll(List.of(prefix + "middle-\uFFFD-tail", prefix + "middle-?-tail",
+				prefix + "middle-\uD800\uDC00-tail", prefix + "middle-\u0000-tail"));
+		Path input = dir.resolve("surrogates-input.jfr");
+		List<String> emitted = new ArrayList<>();
+		try (Recording recording = new Recording()) {
+			recording.enable(ExactStringEvent.class);
+			recording.start();
+			for (String value : values) {
+				for (int i = 0; i < 100; i++) {
+					ExactStringEvent event = new ExactStringEvent();
+					event.value = value;
+					event.commit();
+					emitted.add(value);
+				}
+			}
+			recording.stop();
+			recording.dump(input);
+		}
+		List<String> read = exactStringValues(input);
+		assertEquals(emitted.size(), read.size());
+		Map<String, Integer> expectedCounts = new LinkedHashMap<>();
+		Map<String, Integer> recordedCounts = new LinkedHashMap<>();
+		for (String value : emitted) {
+			expectedCounts.merge(codeUnits(value), 1, Integer::sum);
+		}
+		for (String value : read) {
+			recordedCounts.merge(codeUnits(value), 1, Integer::sum);
+		}
+		assertEquals(expectedCounts, recordedCounts, "the JDK must preserve every exact value and occurrence count");
+		StringScanner scanner = new StringScanner(true, true);
+		new StreamingChunkParser().parse(input, scanner);
+		StringCountMap strings = scanner.getStrings();
+		assertEquals(0, scanner.getMisalignedCount());
+		for (int i = 0; i < values.size(); i++) {
+			String value = values.get(i);
+			int entry = strings.indexOf(value);
+			assertTrue(entry >= 0, "missing original value " + i);
+			assertEquals(codeUnits(value), codeUnits(strings.getString(entry)), "exact original value " + i);
+			assertTrue(strings.getCount(entry, StringScanner.INLINE) > 0, "inlined original value " + i);
+			assertTrue(strings.getCount(entry, StringScanner.CONSTANT_POOL) > 0, "pooled original value " + i);
+			assertEquals(100, strings.getCount(entry, StringScanner.INLINE) + strings.getReferenceCount(entry),
+					"every event must store or reference original value " + i);
+		}
+		Map<String, String> replacements = new LinkedHashMap<>();
+		for (String secret : secrets) {
+			replacements.put(secret, secret.replace(prefix, "redacted-value-"));
+		}
+		Map<String, Integer> calls = new LinkedHashMap<>();
+		Path output = dir.resolve("surrogates-output.jfr");
+		RedactionResult result = JfrRedactor.redact(input, output, (value, locations) -> {
+			if (values.contains(value)) {
+				calls.merge(value, 1, Integer::sum);
+			}
+			return replacements.getOrDefault(value, value);
+		});
+		assertEquals(secrets.size(), result.redactedStringCount());
+		assertEquals(values.size(), calls.size());
+		for (int i = 0; i < values.size(); i++) {
+			assertEquals(1, calls.getOrDefault(values.get(i), 0).intValue(), "one callback for original value " + i);
+		}
+		assertEquals(
+				read.stream().map(value -> replacements.getOrDefault(value, value)).map(JfrRedactorTest::codeUnits)
+						.toList(),
+				exactStringValues(output).stream().map(JfrRedactorTest::codeUnits).toList(),
+				"lone-surrogate replacements must round-trip and controls must remain exact");
+	}
+
+	@Name("test.ExactString")
+	@StackTrace(false)
+	static class ExactStringEvent extends Event {
+		String value;
+	}
+
+	private static List<String> exactStringValues(Path file) throws Exception {
+		return RecordingFile.readAllEvents(file).stream()
+				.filter(event -> event.getEventType().getName().equals("test.ExactString"))
+				.map(event -> event.getString("value")).toList();
+	}
+
+	private static String codeUnits(String value) {
+		return value.chars().mapToObj(c -> String.format("%04X", c)).reduce((left, right) -> left + " " + right)
+				.orElse("");
+	}
+
 	@ParameterizedTest
 	@ValueSource(booleans = {false, true})
 	void rejectsSameInputAndOutputWithoutChangingIt(boolean changed, @TempDir
@@ -208,6 +302,23 @@ class JfrRedactorTest {
 			assertFalse(Files.exists(output));
 		}
 		assertEquals(before, fileNames(dir), "failed redaction must leave no temporary files");
+	}
+
+	@Test
+	void rejectsUnpairedSurrogatesInLegacyUtf8WithoutChangingOutput(@TempDir
+	Path dir) throws Exception {
+		Path input = Files.copy(fixture("jrockit-r28-transitions.jfr"), dir.resolve("input.jfr"));
+		Path output = dir.resolve("output.jfr");
+		byte[] original = Files.readAllBytes(input);
+		byte[] previousOutput = {1, 2, 3, 4};
+		Files.write(output, previousOutput);
+		List<String> before = fileNames(dir);
+		IOException failure = assertThrows(IOException.class,
+				() -> JfrRedactor.redact(input, output, (value, locations) -> "replacement\uD800"));
+		assertTrue(failure.getMessage().contains("surrogate"), failure.getMessage());
+		assertArrayEquals(original, Files.readAllBytes(input));
+		assertArrayEquals(previousOutput, Files.readAllBytes(output));
+		assertEquals(before, fileNames(dir), "unsupported legacy encoding must leave no temporary files");
 	}
 
 	@ParameterizedTest

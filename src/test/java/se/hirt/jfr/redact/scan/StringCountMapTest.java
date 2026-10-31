@@ -31,8 +31,11 @@ package se.hirt.jfr.redact.scan;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
+
+import se.hirt.jfr.redact.internal.Utf8;
 
 class StringCountMapTest {
 	@Test
@@ -64,5 +67,28 @@ class StringCountMapTest {
 		map.add(new byte[4], 2, 0, StringScanner.INLINE);
 		assertEquals(1, map.size());
 		assertEquals(2, map.getCount(map.indexOf(""), StringScanner.INLINE));
+	}
+
+	@Test
+	void distinguishesUnpairedSurrogatesFromEachOtherAndReplacementCharacters() {
+		List<String> values = List.of("\uD800", "\uD801", "\uDC00", "\uDC01", "?", "\uFFFD", "\uD800\uDC00",
+				"before\uD800after", "\uD800\uD800\uDC00\uDC00");
+		StringCountMap map = new StringCountMap();
+		for (int category : List.of(StringScanner.INLINE, StringScanner.CONSTANT_POOL)) {
+			for (int i = 0; i < values.size(); i++) {
+				byte[] bytes = Utf8.encode(values.get(i));
+				byte[] padded = new byte[bytes.length + 5];
+				System.arraycopy(bytes, 0, padded, 2, bytes.length);
+				assertEquals(i, map.add(padded, 2, bytes.length, category));
+			}
+		}
+		assertEquals(values.size(), map.size());
+		for (int i = 0; i < values.size(); i++) {
+			assertEquals(values.get(i), map.getString(i));
+			assertEquals(i, map.indexOf(values.get(i)));
+			assertEquals(1, map.getCount(i, StringScanner.INLINE));
+			assertEquals(1, map.getCount(i, StringScanner.CONSTANT_POOL));
+		}
+		assertEquals(-1, map.indexOf("\uD802"));
 	}
 }

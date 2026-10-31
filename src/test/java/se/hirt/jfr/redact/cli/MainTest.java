@@ -36,10 +36,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Properties;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -58,6 +62,35 @@ class MainTest {
 		assertEquals("x".repeat(40), Main.toTableCell("x".repeat(40)));
 		assertEquals("x".repeat(37) + "...", Main.toTableCell("x".repeat(41)));
 		assertEquals("~".repeat(37) + "...", Main.toTableCell("€".repeat(100)));
+	}
+
+	@Test
+	void escapesLoneSurrogatesLosslesslyForUtf8Output(@TempDir
+	Path dir) throws Exception {
+		Map<String, String> cases = new LinkedHashMap<>();
+		cases.put("\uD800", "\\uD800");
+		cases.put("\uDC00", "\\uDC00");
+		cases.put("\uD800start", "\\uD800start");
+		cases.put("end\uDC00", "end\\uDC00");
+		cases.put("before\uD800middle\uDC00after", "before\\uD800middle\\uDC00after");
+		cases.put("\uD83D\uDE00", "\uD83D\uDE00");
+		cases.put("A\uD83D\uDE00B", "A\uD83D\uDE00B");
+		cases.put("\uD800\uD83D\uDE00\uDC00", "\\uD800\uD83D\uDE00\\uDC00");
+		cases.put("\\uD800\\uDC00", "\\\\uD800\\\\uDC00");
+		cases.put("\uFFFD", "\uFFFD");
+		cases.put("?", "?");
+		cases.put("\\\t\r\n", "\\\\\\t\\r\\n");
+
+		Path file = dir.resolve("escaped-strings.txt");
+		Files.write(file, cases.keySet().stream().map(Main::escape).toList(), StandardCharsets.UTF_8);
+		List<String> written = Files.readAllLines(file, StandardCharsets.UTF_8);
+		assertEquals(List.copyOf(cases.values()), written);
+		int index = 0;
+		for (String original : cases.keySet()) {
+			Properties decoded = new Properties();
+			decoded.load(new StringReader("value=" + written.get(index++)));
+			assertEquals(original, decoded.getProperty("value"), "escaping must preserve the original UTF-16 units");
+		}
 	}
 
 	@Test

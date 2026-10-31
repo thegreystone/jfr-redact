@@ -28,6 +28,7 @@
  */
 package se.hirt.jfr.redact;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
@@ -43,6 +44,7 @@ import se.hirt.jfr.redact.parser.ChunkTypes;
 import se.hirt.jfr.redact.parser.ChunkTypes.Type;
 import se.hirt.jfr.redact.parser.RecordingStream;
 import se.hirt.jfr.redact.scan.StringCountMap;
+import se.hirt.jfr.redact.internal.Utf8;
 
 /**
  * Second redaction pass: writes the recording with the strings replaced. Chunks without replaced
@@ -340,6 +342,9 @@ final class ChunkRewriter {
 		switch (kind) {
 		case ChunkTypes.KIND_UTF8: {
 			if (encodedUtf8[entry] == null) {
+				if (Utf8.hasUnpairedSurrogate(replacements[entry])) {
+					throw new IOException("Unpaired surrogate in replacement for a JFR 0.9 UTF-8 string");
+				}
 				byte[] utf8 = replacements[entry].getBytes(StandardCharsets.UTF_8);
 				if (utf8.length > 0xFFFF) {
 					throw new IOException("Replacement too long for a JFR 0.9 string: " + utf8.length + " bytes");
@@ -366,21 +371,42 @@ final class ChunkRewriter {
 		}
 		default: {
 			if (encodedStrings[entry] == null) {
-				byte[] utf8 = replacements[entry].getBytes(StandardCharsets.UTF_8);
-				if (utf8.length == 0) {
-					encodedStrings[entry] = new byte[] {1};
+				String replacement = replacements[entry];
+				if (Utf8.hasUnpairedSurrogate(replacement)) {
+					encodedStrings[entry] = encodeChars(replacement);
 				} else {
-					byte[] length = encodeVarint(utf8.length, 1);
-					byte[] encoded = new byte[1 + length.length + utf8.length];
-					encoded[0] = 3;
-					System.arraycopy(length, 0, encoded, 1, length.length);
-					System.arraycopy(utf8, 0, encoded, 1 + length.length, utf8.length);
-					encodedStrings[entry] = encoded;
+					byte[] utf8 = replacement.getBytes(StandardCharsets.UTF_8);
+					if (utf8.length == 0) {
+						encodedStrings[entry] = new byte[] {1};
+					} else {
+						byte[] length = encodeVarint(utf8.length, 1);
+						byte[] encoded = new byte[1 + length.length + utf8.length];
+						encoded[0] = 3;
+						System.arraycopy(length, 0, encoded, 1, length.length);
+						System.arraycopy(utf8, 0, encoded, 1 + length.length, utf8.length);
+						encodedStrings[entry] = encoded;
+					}
 				}
 			}
 			return encodedStrings[entry];
 		}
 		}
+	}
+
+	/** Uses JFR's char-array encoding to preserve every UTF-16 code unit. */
+	private static byte[] encodeChars(String value) {
+		ByteArrayOutputStream encoded = new ByteArrayOutputStream(value.length());
+		encoded.write(4);
+		encoded.writeBytes(encodeVarint(value.length(), 1));
+		for (int i = 0; i < value.length(); i++) {
+			int c = value.charAt(i);
+			while (c >= 0x80) {
+				encoded.write((c & 0x7F) | 0x80);
+				c >>>= 7;
+			}
+			encoded.write(c);
+		}
+		return encoded.toByteArray();
 	}
 
 	private void addPatch(int start, int end, byte[] bytes) {

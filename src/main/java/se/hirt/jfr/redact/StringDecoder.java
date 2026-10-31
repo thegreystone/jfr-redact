@@ -34,8 +34,10 @@ import se.hirt.jfr.redact.parser.ChunkTypes;
 import se.hirt.jfr.redact.parser.RecordingStream;
 
 /**
- * Decodes a string value of any encoding into its UTF-8 bytes, which is how strings are keyed.
- * After {@link #read(RecordingStream, int)} returned {@link #STRING}, the UTF-8 bytes are in
+ * Decodes each string according to its recording encoding, then produces its canonical key bytes.
+ * These are UTF-8 with unpaired UTF-16 surrogates retained as three-byte sequences, as handled by
+ * {@link se.hirt.jfr.redact.internal.Utf8}. This internal representation is not emitted as JFR
+ * UTF-8. After {@link #read(RecordingStream, int)} returned {@link #STRING}, the key bytes are in
  * {@code array[offset, offset + length)}, either in the chunk buffer or in an internal scratch
  * buffer.
  */

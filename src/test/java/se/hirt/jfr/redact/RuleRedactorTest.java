@@ -268,6 +268,26 @@ class RuleRedactorTest {
 	}
 
 	@Test
+	void hashesDistinctLoneSurrogatesWithoutCollapsingToReplacementCharacters() {
+		List<String> names = List.of("\uD800", "\uD801", "\uDC00", "?", "\uFFFD");
+		List<StringLocation> locations = List.of(new StringLocation("java.lang.Thread", "javaName", true, List.of()));
+		for (boolean keyed : List.of(false, true)) {
+			RuleRedactor first = keyed ? RuleRedactor.builder().hashThreadNames(new byte[] {1, 2, 3}).build()
+					: RuleRedactor.builder().hashThreadNames().build();
+			RuleRedactor second = keyed ? RuleRedactor.builder().hashThreadNames(new byte[] {1, 2, 3}).build()
+					: RuleRedactor.builder().hashThreadNames().build();
+			List<String> hashes = new ArrayList<>();
+			for (String name : names) {
+				String hashed = first.redact(name, locations);
+				assertEquals(hashed, first.redact(name, locations));
+				assertEquals(hashed, second.redact(name, locations));
+				hashes.add(hashed);
+			}
+			assertEquals(names.size(), hashes.stream().distinct().count(), "distinct hashes, HMAC=" + keyed);
+		}
+	}
+
+	@Test
 	void hashesThreadNamesInRecording(@TempDir
 	Path dir) throws Exception {
 		Path input = dir.resolve("input.jfr");

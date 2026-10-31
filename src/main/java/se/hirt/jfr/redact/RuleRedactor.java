@@ -28,7 +28,6 @@
  */
 package se.hirt.jfr.redact;
 
-import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -45,6 +44,8 @@ import java.util.regex.Pattern;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+
+import se.hirt.jfr.redact.internal.Utf8;
 
 /**
  * A {@link StringRedactor} applying simple rules, without regular expressions. Rules are tried in
@@ -310,7 +311,7 @@ public final class RuleRedactor implements StringRedactor {
 	}
 
 	private static byte[] digest(String algorithm, byte[] key, String value) {
-		byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+		byte[] bytes = Utf8.encode(value);
 		try {
 			if (key == null) {
 				return MessageDigest.getInstance(algorithm).digest(bytes);

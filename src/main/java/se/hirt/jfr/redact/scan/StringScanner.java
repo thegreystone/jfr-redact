@@ -50,8 +50,9 @@ import se.hirt.jfr.redact.parser.RecordingStream;
  * it. Reference counting decodes nearly all events, and uses separate code paths so that it does
  * not affect the performance when disabled.
  * <p>
- * Strings are keyed by their UTF-8 encoding, so the same string stored as UTF-8, Latin-1, UTF-16 or
- * char array is counted as one.
+ * Strings are keyed by a lossless UTF-8 representation, so the same string stored as UTF-8,
+ * Latin-1, UTF-16 or char array is counted as one. Unpaired UTF-16 surrogates retain their code
+ * units through {@link se.hirt.jfr.redact.internal.Utf8}.
  */
 public final class StringScanner implements ChunkParserListener {
 	public static final int INLINE = 0;
