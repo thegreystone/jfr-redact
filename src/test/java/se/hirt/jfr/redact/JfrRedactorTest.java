@@ -30,17 +30,25 @@ package se.hirt.jfr.redact;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import java.io.IOException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import jdk.jfr.Configuration;
 import jdk.jfr.Event;
@@ -139,6 +147,129 @@ class JfrRedactorTest {
 		RedactionResult result = JfrRedactor.redact(input, output, (value, locations) -> value);
 		assertEquals(0, result.redactedStringCount());
 		assertArrayEquals(Files.readAllBytes(input), Files.readAllBytes(output));
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {false, true})
+	void rejectsSameInputAndOutputWithoutChangingIt(boolean changed, @TempDir
+	Path dir) throws Exception {
+		Path input = Files.copy(fixture("jdk9-basic.jfr"), dir.resolve("input.jfr"));
+		assertAliasRejected(input, input, changed, dir);
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {false, true})
+	void rejectsHardLinkToInputWithoutChangingIt(boolean changed, @TempDir
+	Path dir) throws Exception {
+		Path input = Files.copy(fixture("jdk9-basic.jfr"), dir.resolve("input.jfr"));
+		Path output = dir.resolve("hard-link.jfr");
+		try {
+			Files.createLink(output, input);
+		} catch (UnsupportedOperationException | FileSystemException | SecurityException e) {
+			assumeTrue(false, "Hard links are unavailable: " + e);
+		}
+		assertAliasRejected(input, output, changed, dir);
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {false, true})
+	void rejectsSymbolicLinkToInputWithoutChangingIt(boolean changed, @TempDir
+	Path dir) throws Exception {
+		Path input = Files.copy(fixture("jdk9-basic.jfr"), dir.resolve("input.jfr"));
+		Path output = dir.resolve("symbolic-link.jfr");
+		try {
+			Files.createSymbolicLink(output, input.getFileName());
+		} catch (UnsupportedOperationException | FileSystemException | SecurityException e) {
+			assumeTrue(false, "Symbolic links are unavailable: " + e);
+		}
+		assertAliasRejected(input, output, changed, dir);
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {false, true})
+	void failedRewritePreservesOutputAndCleansTemporaryFiles(boolean existingOutput, @TempDir
+	Path dir) throws Exception {
+		Path input = Files.copy(fixture("jrockit-r28-transitions.jfr"), dir.resolve("input.jfr"));
+		Path output = dir.resolve("output.jfr");
+		byte[] original = Files.readAllBytes(input);
+		byte[] previousOutput = {1, 2, 3, 4};
+		if (existingOutput) {
+			Files.write(output, previousOutput);
+		}
+		List<String> before = fileNames(dir);
+		String oversized = "X".repeat(65536);
+		IOException failure = assertThrows(IOException.class,
+				() -> JfrRedactor.redact(input, output, (value, locations) -> oversized));
+		assertTrue(failure.getMessage().contains("Replacement too long for a JFR 0.9 string"));
+		assertArrayEquals(original, Files.readAllBytes(input));
+		if (existingOutput) {
+			assertArrayEquals(previousOutput, Files.readAllBytes(output));
+		} else {
+			assertFalse(Files.exists(output));
+		}
+		assertEquals(before, fileNames(dir), "failed redaction must leave no temporary files");
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {false, true})
+	void replacesExistingOutputOnlyAfterSuccess(boolean changed, @TempDir
+	Path dir) throws Exception {
+		Path input = Files.copy(fixture("jdk9-basic.jfr"), dir.resolve("input.jfr"));
+		Path output = dir.resolve("output.jfr");
+		byte[] original = Files.readAllBytes(input);
+		Files.write(output, new byte[] {1, 2, 3, 4});
+		List<String> before = fileNames(dir);
+		RedactionResult result = JfrRedactor.redact(input, output, replacement(changed));
+		assertArrayEquals(original, Files.readAllBytes(input));
+		if (changed) {
+			assertTrue(result.redactedStringCount() > 0);
+			assertFalse(Arrays.equals(original, Files.readAllBytes(output)));
+			assertEquals(RecordingFile.readAllEvents(input).size(), RecordingFile.readAllEvents(output).size());
+		} else {
+			assertEquals(0, result.redactedStringCount());
+			assertArrayEquals(original, Files.readAllBytes(output));
+		}
+		assertEquals(before, fileNames(dir), "successful redaction must leave no temporary files");
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {false, true})
+	void failedPublicationPreservesDestinationAndCleansTemporaryFiles(boolean changed, @TempDir
+	Path dir) throws Exception {
+		Path input = Files.copy(fixture("jdk9-basic.jfr"), dir.resolve("input.jfr"));
+		byte[] original = Files.readAllBytes(input);
+		Path output = Files.createDirectory(dir.resolve("output.jfr"));
+		byte[] previous = {1, 2, 3, 4};
+		Path existing = Files.write(output.resolve("keep"), previous);
+		List<String> before = fileNames(dir);
+		assertThrows(IOException.class, () -> JfrRedactor.redact(input, output, replacement(changed)));
+		assertArrayEquals(original, Files.readAllBytes(input));
+		assertArrayEquals(previous, Files.readAllBytes(existing));
+		assertEquals(before, fileNames(dir), "failed publication must leave no temporary files");
+	}
+
+	private static void assertAliasRejected(Path input, Path output, boolean changed, Path dir) throws Exception {
+		byte[] original = Files.readAllBytes(input);
+		List<String> before = fileNames(dir);
+		assertThrows(IOException.class, () -> JfrRedactor.redact(input, output, replacement(changed)));
+		assertArrayEquals(original, Files.readAllBytes(input));
+		assertArrayEquals(original, Files.readAllBytes(output));
+		assertTrue(Files.isSameFile(input, output), "rejection must preserve the alias itself");
+		assertEquals(before, fileNames(dir));
+	}
+
+	private static StringRedactor replacement(boolean changed) {
+		return (value, locations) -> changed ? "<REDACTED>" : value;
+	}
+
+	private static Path fixture(String name) throws Exception {
+		return Path.of(JfrRedactorTest.class.getResource("/recordings/" + name).toURI());
+	}
+
+	private static List<String> fileNames(Path dir) throws IOException {
+		try (var files = Files.list(dir)) {
+			return files.map(path -> path.getFileName().toString()).sorted().toList();
+		}
 	}
 
 	private static Path record(Path file) throws Exception {

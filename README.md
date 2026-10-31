@@ -60,6 +60,10 @@ redacted strings that also occur there are reported in the result.
 Redaction refuses recordings it cannot fully decode, such as ones with events of undeclared types, rather than risk
 leaving strings it could not see.
 
+Input and output must be different files, including through hard links or symbolic links. The result is written to
+a temporary file beside the output and atomically replaces it after successful processing. Failed processing leaves
+an existing output untouched; the output filesystem must support atomic replacement.
+
 ```
 jfr-redact redact --match <regex> [--match <regex>]... [--replacement <text>] <recording.jfr> <redacted.jfr>
 ```

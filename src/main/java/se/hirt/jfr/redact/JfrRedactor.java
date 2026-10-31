@@ -54,12 +54,21 @@ import se.hirt.jfr.redact.scan.StringCountMap;
  * values) are not redacted. A redacted string that also occurs in the metadata is reported in
  * {@link RedactionResult#redactedInMetadata()}, and is the only way a copy of a redacted string can
  * remain.
+ * <p>
+ * Input and output must identify different files, including through links. The recording is written
+ * to a temporary file beside the output, then published with an atomic replacement. Failed
+ * processing leaves an existing output untouched. The output filesystem must support atomic
+ * replacement.
  */
 public final class JfrRedactor {
 	private JfrRedactor() {
 	}
 
 	public static RedactionResult redact(Path input, Path output, StringRedactor redactor) throws IOException {
+		Path destination = output.toAbsolutePath();
+		if (Files.exists(destination) && Files.isSameFile(input, destination)) {
+			throw new IOException("Input and output refer to the same file: " + output);
+		}
 		LocationCollector collector = new LocationCollector();
 		new StreamingChunkParser().parse(input, collector);
 		StringCountMap strings = collector.getStrings();
@@ -94,20 +103,48 @@ public final class JfrRedactor {
 			}
 		}
 
-		if (redactedCount == 0) {
-			Files.copy(input, output, StandardCopyOption.REPLACE_EXISTING);
-			return new RedactionResult(strings.size(), 0, 0, 0, 0, 0, 0, List.of());
+		try (TemporaryOutput temporary = new TemporaryOutput(destination)) {
+			RedactionResult result;
+			if (redactedCount == 0) {
+				Files.copy(input, temporary.path, StandardCopyOption.REPLACE_EXISTING);
+				result = new RedactionResult(strings.size(), 0, 0, 0, 0, 0, 0, List.of());
+			} else {
+				ChunkRewriter rewriter = new ChunkRewriter(changedStrings, changedReplacements.toArray(new String[0]),
+						collector.getChangedCheckpoints(changed), changedEventTypes, changedPoolTypes);
+				try (FileChannel in = FileChannel.open(input, StandardOpenOption.READ);
+						FileChannel out = FileChannel.open(temporary.path, StandardOpenOption.WRITE)) {
+					rewriter.rewrite(in, out);
+				}
+				result = new RedactionResult(strings.size(), redactedCount, rewriter.getChunkCount(),
+						rewriter.getRewrittenChunkCount(), rewriter.getRewrittenEventCount(),
+						rewriter.getRewrittenCheckpointCount(), rewriter.getReplacedCount(),
+						Collections.unmodifiableList(redactedInMetadata));
+			}
+			temporary.publish();
+			return result;
 		}
-		ChunkRewriter rewriter = new ChunkRewriter(changedStrings, changedReplacements.toArray(new String[0]),
-				collector.getChangedCheckpoints(changed), changedEventTypes, changedPoolTypes);
-		try (FileChannel in = FileChannel.open(input, StandardOpenOption.READ);
-				FileChannel out = FileChannel.open(output, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
-						StandardOpenOption.TRUNCATE_EXISTING)) {
-			rewriter.rewrite(in, out);
+	}
+
+	private static final class TemporaryOutput implements AutoCloseable {
+		private final Path destination;
+		private final Path path;
+		private boolean published;
+
+		TemporaryOutput(Path destination) throws IOException {
+			this.destination = destination;
+			this.path = Files.createTempFile(destination.getParent(), ".jfr-redact-", ".tmp");
 		}
-		return new RedactionResult(strings.size(), redactedCount, rewriter.getChunkCount(),
-				rewriter.getRewrittenChunkCount(), rewriter.getRewrittenEventCount(),
-				rewriter.getRewrittenCheckpointCount(), rewriter.getReplacedCount(),
-				Collections.unmodifiableList(redactedInMetadata));
+
+		void publish() throws IOException {
+			Files.move(path, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+			published = true;
+		}
+
+		@Override
+		public void close() throws IOException {
+			if (!published) {
+				Files.deleteIfExists(path);
+			}
+		}
 	}
 }
