@@ -47,7 +47,8 @@ import se.hirt.jfr.redact.scan.StringScanner;
 
 /**
  * First redaction pass: collects every distinct string with all the locations it is stored at.
- * Fails on anything that could hide strings from the redaction, such as events of undeclared types.
+ * Rejects undeclared event types and malformed values encountered while collecting strings. Event
+ * payloads without inline strings are skipped; their constants are collected separately.
  */
 final class LocationCollector implements ChunkParserListener {
 	private static final String NO_FIELD = "value";

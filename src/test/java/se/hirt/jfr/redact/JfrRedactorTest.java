@@ -60,6 +60,8 @@ import jdk.jfr.StackTrace;
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordingFile;
 import se.hirt.jfr.redact.parser.ChunkReader;
+import se.hirt.jfr.redact.parser.ChunkTypes;
+import se.hirt.jfr.redact.parser.RecordingStream;
 import se.hirt.jfr.redact.parser.StreamingChunkParser;
 import se.hirt.jfr.redact.scan.StringCountMap;
 import se.hirt.jfr.redact.scan.StringScanner;
@@ -316,6 +318,107 @@ class JfrRedactorTest {
 	private static String codeUnits(String value) {
 		return value.chars().mapToObj(c -> String.format("%04X", c)).reduce((left, right) -> left + " " + right)
 				.orElse("");
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {false, true})
+	void copiesUnrelatedPrimitivePayloadWithoutDecodingIt(boolean changed, @TempDir
+	Path dir) throws Exception {
+		Path input = dir.resolve("primitive-input.jfr");
+		String secret = "redaction-payload-secret";
+		try (Recording recording = new Recording()) {
+			recording.enable(PrimitivePayloadEvent.class);
+			recording.enable(ExactStringEvent.class);
+			recording.start();
+			PrimitivePayloadEvent primitive = new PrimitivePayloadEvent();
+			primitive.value = 128;
+			primitive.commit();
+			ExactStringEvent string = new ExactStringEvent();
+			string.value = secret;
+			string.commit();
+			recording.stop();
+			recording.dump(input);
+		}
+		List<RecordedEvent> primitives = RecordingFile.readAllEvents(input).stream()
+				.filter(event -> event.getEventType().getName().equals("test.PrimitivePayload")).toList();
+		assertEquals(1, primitives.size());
+		assertEquals(128, primitives.getFirst().getInt("value"));
+		assertEquals(List.of(secret), exactStringValues(input));
+		int valueOffset = primitiveEvent(input, true).valueOffset();
+		byte[] malformed = Files.readAllBytes(input);
+		assertEquals(0x80, malformed[valueOffset] & 0xFF);
+		malformed[valueOffset] &= 0x7F;
+		Files.write(input, malformed);
+		byte[] primitiveBytes = primitiveEvent(input, false).bytes();
+		Path output = dir.resolve("output.jfr");
+		Files.write(output, new byte[] {1, 2, 3, 4});
+		List<String> before = fileNames(dir);
+		RedactionResult result = JfrRedactor.redact(input, output,
+				(value, locations) -> changed && value.equals(secret) ? "<REDACTED>" : value);
+		assertArrayEquals(malformed, Files.readAllBytes(input));
+		if (changed) {
+			assertEquals(1, result.redactedStringCount());
+			assertEquals(List.of("<REDACTED>"), exactStringValues(output));
+		} else {
+			assertEquals(0, result.redactedStringCount());
+			assertArrayEquals(malformed, Files.readAllBytes(output));
+		}
+		assertArrayEquals(primitiveBytes, primitiveEvent(output, false).bytes(),
+				"the unrelated event frame and its deliberately opaque payload must be copied verbatim");
+		assertEquals(before, fileNames(dir), "redaction must leave no temporary files");
+	}
+
+	@Name("test.PrimitivePayload")
+	@StackTrace(false)
+	static class PrimitivePayloadEvent extends Event {
+		int value;
+	}
+
+	private record PrimitiveFrame(int valueOffset, byte[] bytes) {
+	}
+
+	private static PrimitiveFrame primitiveEvent(Path input, boolean locateValue) throws IOException {
+		try (FileChannel channel = FileChannel.open(input)) {
+			ChunkReader reader = new ChunkReader();
+			reader.reset(channel);
+			long chunkStart = 0;
+			while (reader.next()) {
+				RecordingStream stream = reader.stream();
+				for (int start = reader.headerSize(); start < reader.size();) {
+					stream.position(start);
+					int end = start + (int) stream.readVarint();
+					ChunkTypes.Type type = reader.types().getEventType(stream.readVarint());
+					if (type != null && type.name.equals("test.PrimitivePayload")) {
+						assertFalse(type.containsStrings, "the event must take the no-inline-string path");
+						byte[] bytes = Arrays.copyOfRange(stream.array(), start, end);
+						if (!locateValue) {
+							return new PrimitiveFrame(-1, bytes);
+						}
+						for (int field = 0; field < type.fields.length; field++) {
+							int op = type.fields[field];
+							assertEquals(0, op & ChunkTypes.ARRAY_FLAG);
+							int position = stream.position();
+							if (type.fieldNames[field].equals("value")) {
+								assertEquals(ChunkTypes.KIND_VARINT, op & ChunkTypes.KIND_MASK);
+								assertEquals(128, stream.readVarint());
+								assertEquals(2, stream.position() - position);
+								return new PrimitiveFrame(Math.toIntExact(chunkStart + position), bytes);
+							}
+							switch (op & ChunkTypes.KIND_MASK) {
+							case ChunkTypes.KIND_VARINT -> stream.skipVarint();
+							case ChunkTypes.KIND_FIXED1 -> stream.skip(1);
+							case ChunkTypes.KIND_FIXED4 -> stream.skip(4);
+							case ChunkTypes.KIND_FIXED8 -> stream.skip(8);
+							default -> throw new AssertionError("Unexpected primitive field kind " + op);
+							}
+						}
+					}
+					start = end;
+				}
+				chunkStart += reader.size();
+			}
+		}
+		throw new AssertionError("The primitive event value was not found");
 	}
 
 	@ParameterizedTest

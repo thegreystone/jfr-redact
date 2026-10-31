@@ -28,13 +28,16 @@
  */
 package se.hirt.jfr.redact.parser;
 
+import java.io.EOFException;
+import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
 
 /**
- * Cursor over the in-memory bytes of a single chunk. Bounds are not checked explicitly; reading
- * past the backing array surfaces as an {@link ArrayIndexOutOfBoundsException}.
+ * Cursor over the in-memory bytes of a single chunk. Reads and skips are bounded by the logical
+ * chunk limit, even when the backing buffer is larger. Failed operations leave the cursor
+ * unchanged.
  */
 public final class RecordingStream {
 	private static final VarHandle SHORT_BE = MethodHandles.byteArrayViewVarHandle(short[].class, ByteOrder.BIG_ENDIAN);
@@ -46,6 +49,9 @@ public final class RecordingStream {
 	private int limit;
 
 	void reset(byte[] buffer, int limit) {
+		if (limit < 0 || limit > buffer.length) {
+			throw new IllegalArgumentException("Invalid chunk limit " + limit + " for buffer size " + buffer.length);
+		}
 		this.buffer = buffer;
 		this.limit = limit;
 		this.position = 0;
@@ -62,7 +68,10 @@ public final class RecordingStream {
 		return position;
 	}
 
-	public void position(int position) {
+	public void position(int position) throws IOException {
+		if (position < 0 || position > limit) {
+			throw new IOException("Invalid position " + position + " for chunk limit " + limit);
+		}
 		this.position = position;
 	}
 
@@ -70,33 +79,41 @@ public final class RecordingStream {
 		return limit;
 	}
 
-	public byte read() {
+	public byte read() throws IOException {
+		require(1);
 		return buffer[position++];
 	}
 
-	public void skip(int bytes) {
+	public void skip(int bytes) throws IOException {
+		require(bytes);
 		position += bytes;
 	}
 
-	public short readRawShort() {
+	public short readRawShort() throws IOException {
+		require(2);
 		short value = (short) SHORT_BE.get(buffer, position);
 		position += 2;
 		return value;
 	}
 
-	public int readRawInt() {
+	public int readRawInt() throws IOException {
+		require(4);
 		int value = (int) INT_BE.get(buffer, position);
 		position += 4;
 		return value;
 	}
 
-	public long readRawLong() {
+	public long readRawLong() throws IOException {
+		require(8);
 		long value = (long) LONG_BE.get(buffer, position);
 		position += 8;
 		return value;
 	}
 
-	public long readVarint() {
+	public long readVarint() throws IOException {
+		if (limit - position < 9) {
+			return readVarintNearLimit();
+		}
 		byte[] b = buffer;
 		int p = position;
 		long value = b[p++];
@@ -119,7 +136,11 @@ public final class RecordingStream {
 		return value;
 	}
 
-	public void skipVarint() {
+	public void skipVarint() throws IOException {
+		if (limit - position < 9) {
+			readVarintNearLimit();
+			return;
+		}
 		byte[] b = buffer;
 		int p = position;
 		for (int i = 0; i < 8; i++) {
@@ -129,5 +150,30 @@ public final class RecordingStream {
 			}
 		}
 		position = p + 1;
+	}
+
+	/** Fewer than nine bytes remain; check each byte and only commit a complete varint. */
+	private long readVarintNearLimit() throws EOFException {
+		int p = position;
+		long value = 0;
+		for (int shift = 0; p < limit; shift += 7) {
+			long next = buffer[p++];
+			value |= (next & 0x7F) << shift;
+			if (next >= 0) {
+				position = p;
+				return value;
+			}
+		}
+		throw new EOFException("Truncated varint at offset " + position + " in chunk of size " + limit);
+	}
+
+	private void require(int bytes) throws IOException {
+		if (bytes < 0) {
+			throw new IOException("Invalid byte count " + bytes + " at offset " + position);
+		}
+		if (bytes > limit - position) {
+			throw new EOFException("Unexpected end of chunk at offset " + position + ": need " + bytes + " bytes, have "
+					+ (limit - position));
+		}
 	}
 }

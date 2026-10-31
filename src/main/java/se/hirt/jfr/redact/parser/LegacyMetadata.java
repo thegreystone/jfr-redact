@@ -283,16 +283,17 @@ final class LegacyMetadata {
 		return PRIMITIVE_KINDS[dataType];
 	}
 
-	private String readUtf(RecordingStream stream) {
+	private String readUtf(RecordingStream stream) throws IOException {
 		int length = stream.readRawShort() & 0xFFFF;
-		String s = new String(stream.array(), stream.position(), length, StandardCharsets.UTF_8);
+		int offset = stream.position();
 		stream.skip(length);
+		String s = new String(stream.array(), offset, length, StandardCharsets.UTF_8);
 		strings.add(s);
 		return s;
 	}
 
 	/** Strings not needed for parsing, kept since they are copies a redaction must know about */
-	private void skipUtf(RecordingStream stream) {
+	private void skipUtf(RecordingStream stream) throws IOException {
 		readUtf(stream);
 	}
 }

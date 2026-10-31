@@ -28,6 +28,8 @@
  */
 package se.hirt.jfr.redact.parser;
 
+import java.io.IOException;
+
 /** The parts of a JFR 1.0+ chunk header needed for parsing. */
 public final class ChunkHeader {
 	public static final int SIZE = 68;
@@ -44,7 +46,7 @@ public final class ChunkHeader {
 	 * @param stream
 	 *            positioned right after the magic and version
 	 */
-	ChunkHeader(RecordingStream stream, short major, short minor) {
+	ChunkHeader(RecordingStream stream, short major, short minor) throws IOException {
 		this.major = major;
 		this.minor = minor;
 		size = stream.readRawLong();

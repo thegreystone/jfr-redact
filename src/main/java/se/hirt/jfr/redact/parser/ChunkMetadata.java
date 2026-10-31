@@ -63,7 +63,7 @@ public final class ChunkMetadata {
 		stream.skipVarint(); // start time
 		stream.skipVarint(); // duration
 		stream.skipVarint(); // metadata id
-		strings = new String[(int) stream.readVarint()];
+		strings = new String[readLength(stream)];
 		for (int i = 0; i < strings.length; i++) {
 			strings[i] = readString(stream);
 		}
@@ -139,14 +139,14 @@ public final class ChunkMetadata {
 			return "";
 		case 3:
 		case 5: {
-			int length = (int) stream.readVarint();
-			String s = new String(stream.array(), stream.position(), length,
-					encoding == 3 ? StandardCharsets.UTF_8 : StandardCharsets.ISO_8859_1);
+			int length = readLength(stream);
+			int offset = stream.position();
 			stream.skip(length);
-			return s;
+			return new String(stream.array(), offset, length,
+					encoding == 3 ? StandardCharsets.UTF_8 : StandardCharsets.ISO_8859_1);
 		}
 		case 4: {
-			char[] chars = new char[(int) stream.readVarint()];
+			char[] chars = new char[readLength(stream)];
 			for (int i = 0; i < chars.length; i++) {
 				chars[i] = (char) stream.readVarint();
 			}
@@ -155,5 +155,14 @@ public final class ChunkMetadata {
 		default:
 			throw new IOException("Unexpected metadata string encoding " + encoding);
 		}
+	}
+
+	/** Each string-table entry, byte or character needs at least one encoded byte. */
+	private static int readLength(RecordingStream stream) throws IOException {
+		long length = stream.readVarint();
+		if (length < 0 || length > stream.limit() - stream.position()) {
+			throw new IOException("Invalid metadata length " + length + " at offset " + stream.position());
+		}
+		return (int) length;
 	}
 }

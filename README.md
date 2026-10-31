@@ -57,8 +57,9 @@ every occurrence of the string, inline in events, in constant pools and in all c
 remains. The one exception is the metadata (type, field and annotation names and values), which is not redacted:
 redacted strings that also occur there, as whole strings or within longer strings, are reported in the result.
 
-Redaction refuses recordings it cannot fully decode, such as ones with events of undeclared types, rather than risk
-leaving strings it could not see.
+Redaction rejects undeclared event types and payloads it cannot decode when collecting strings. Event types that
+cannot contain inline strings are skipped using their declared event sizes and copied verbatim; their payloads are
+not validated. Strings in constant pools are processed separately, including those referenced by skipped events.
 
 Input and output must be different files, including through hard links or symbolic links. The result is written to
 a temporary file beside the output and atomically replaces it after successful processing. Failed processing leaves
