@@ -36,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -51,12 +52,14 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import jdk.jfr.Configuration;
+import jdk.jfr.Description;
 import jdk.jfr.Event;
 import jdk.jfr.Name;
 import jdk.jfr.Recording;
 import jdk.jfr.StackTrace;
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordingFile;
+import se.hirt.jfr.redact.parser.ChunkReader;
 import se.hirt.jfr.redact.parser.StreamingChunkParser;
 import se.hirt.jfr.redact.scan.StringCountMap;
 import se.hirt.jfr.redact.scan.StringScanner;
@@ -140,6 +143,78 @@ class JfrRedactorTest {
 				(value, locations) -> locations.contains(StringLocation.METADATA) ? "<M>" : value);
 		assertTrue(result.redactedStringCount() > 0);
 		assertEquals(result.redactedStringCount(), result.redactedInMetadata().size());
+	}
+
+	@Test
+	void reportsRedactedSubstringsInsideLongerMetadataStrings(@TempDir
+	Path dir) throws Exception {
+		String secret = "recording-secret-abc";
+		String differentCase = "RECORDING-SECRET-ABC";
+		String absent = "unmentioned-recording-secret";
+		List<String> values = List.of(secret, secret, differentCase, absent, "");
+		Path input = dir.resolve("metadata-substring-input.jfr");
+		try (Recording recording = new Recording()) {
+			recording.enable(MetadataSubstringEvent.class);
+			recording.start();
+			for (String value : values) {
+				MetadataSubstringEvent event = new MetadataSubstringEvent();
+				event.value = value;
+				event.commit();
+			}
+			recording.stop();
+			recording.dump(input);
+		}
+		List<String> metadata = metadataStrings(input);
+		assertFalse(metadata.contains(secret), "the secret must occur only inside a longer metadata string");
+		assertTrue(metadata.contains("prefix " + secret + " suffix"));
+		Map<String, Integer> calls = new LinkedHashMap<>();
+		Map<String, Boolean> metadataLocations = new LinkedHashMap<>();
+		Path output = dir.resolve("metadata-substring-output.jfr");
+		RedactionResult result = JfrRedactor.redact(input, output, (value, locations) -> {
+			if (!values.contains(value)) {
+				return value;
+			}
+			calls.merge(value, 1, Integer::sum);
+			metadataLocations.put(value, locations.contains(StringLocation.METADATA));
+			return "<REDACTED>";
+		});
+		assertEquals(Map.of(secret, 1, differentCase, 1, absent, 1, "", 1), calls);
+		assertEquals(Map.of(secret, true, differentCase, false, absent, false, "", metadata.contains("")),
+				metadataLocations, "empty values match only an actual empty metadata string");
+		assertEquals(4, result.redactedStringCount());
+		List<String> warnings = new ArrayList<>(List.of(secret));
+		if (metadata.contains("")) {
+			warnings.add("");
+		}
+		assertEquals(warnings.stream().sorted().toList(), result.redactedInMetadata().stream().sorted().toList(),
+				"repeated values must be reported only once");
+		List<RecordedEvent> events = RecordingFile.readAllEvents(output).stream()
+				.filter(event -> event.getEventType().getName().equals("test.MetadataSubstring")).toList();
+		assertEquals(values.size(), events.size());
+		for (RecordedEvent event : events) {
+			assertEquals("<REDACTED>", event.getString("value"));
+			assertEquals("prefix " + secret + " suffix", event.getEventType().getDescription(),
+					"metadata stays unchanged and the leftover substring must be reported");
+		}
+	}
+
+	@Name("test.MetadataSubstring")
+	@Description("prefix recording-secret-abc suffix")
+	@StackTrace(false)
+	static class MetadataSubstringEvent extends Event {
+		String value;
+	}
+
+	private static List<String> metadataStrings(Path file) throws IOException {
+		List<String> strings = new ArrayList<>();
+		try (FileChannel channel = FileChannel.open(file)) {
+			ChunkReader reader = new ChunkReader();
+			reader.reset(channel);
+			while (reader.next()) {
+				strings.addAll(Arrays.asList(reader.types().getMetadataStrings()));
+			}
+		}
+		return strings;
 	}
 
 	@Test

@@ -48,7 +48,8 @@ import java.util.List;
  * @param replacedOccurrenceCount
  *            stored string occurrences replaced
  * @param redactedInMetadata
- *            redacted strings that also occur in the metadata, where they remain
+ *            redacted strings that also occur in the metadata, as whole strings or within longer
+ *            strings, where they remain
  */
 public record RedactionResult(long stringCount, long redactedStringCount, long chunkCount, long rewrittenChunkCount,
 		long rewrittenEventCount, long rewrittenCheckpointCount, long replacedOccurrenceCount,

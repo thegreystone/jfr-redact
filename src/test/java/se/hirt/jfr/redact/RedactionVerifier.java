@@ -34,9 +34,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 import jdk.jfr.consumer.RecordedEvent;
@@ -135,6 +137,7 @@ public final class RedactionVerifier {
 			}
 		}
 
+		checkMetadataReport(problems, decisions, metadataStrings(output), result.redactedInMetadata());
 		problems.addAll(rawSearch(output, decisions, expected, result.redactedInMetadata()));
 
 		if (useJdkParser) {
@@ -149,6 +152,34 @@ public final class RedactionVerifier {
 		return problems;
 	}
 
+	/** Checks every changed value, independently of raw encodings and the raw-search limit. */
+	private static void checkMetadataReport(
+		List<String> problems, Map<String, String> decisions, List<String> metadata, List<String> reported) {
+		Set<String> expected = new HashSet<>();
+		for (String original : decisions.keySet()) {
+			for (String text : metadata) {
+				if (original.isEmpty() ? text.isEmpty() : text.contains(original)) {
+					expected.add(original);
+					break;
+				}
+			}
+		}
+		Set<String> actual = new HashSet<>(reported);
+		check(problems, actual.size() == reported.size(), "duplicate strings in the metadata report");
+		int missing = 0;
+		for (String original : decisions.keySet()) {
+			if (expected.contains(original) && !actual.contains(original) && missing++ < 5) {
+				problems.add("unreported redacted string remains in metadata: " + shorten(original));
+			}
+		}
+		int unexpected = 0;
+		for (String original : actual) {
+			if (!expected.contains(original) && unexpected++ < 5) {
+				problems.add("incorrectly reported redacted string in metadata: " + shorten(original));
+			}
+		}
+	}
+
 	/** Searches the raw output for the longest redacted strings, as UTF-8 and UTF-16 */
 	private static List<String> rawSearch(
 		Path output, Map<String, String> decisions, Map<String, long[]> kept, List<String> reportedInMetadata)
@@ -159,8 +190,6 @@ public final class RedactionVerifier {
 		originals.removeIf(kept::containsKey);
 		originals.sort((a, b) -> b.length() - a.length());
 		List<long[]> regions = regions(output);
-		List<String> metadataStrings = metadataStrings(output);
-		int insideMetadataStrings = 0;
 		for (String original : originals.subList(0, Math.min(RAW_SEARCH_LIMIT, originals.size()))) {
 			int at = indexOf(bytes, original.getBytes(StandardCharsets.UTF_8));
 			if (at < 0) {
@@ -173,16 +202,8 @@ public final class RedactionVerifier {
 			if (inMetadata && reportedInMetadata.contains(original)) {
 				continue;
 			}
-			if (inMetadata && metadataStrings.stream().anyMatch(m -> m.contains(original))) {
-				insideMetadataStrings++;
-				continue;
-			}
 			problems.add("redacted string found in the raw output, in the " + region(regions, at) + ": "
 					+ shorten(original));
-		}
-		if (insideMetadataStrings > 0) {
-			System.out.printf("  note: %d redacted strings occur inside longer metadata strings%n",
-					insideMetadataStrings);
 		}
 		return problems;
 	}

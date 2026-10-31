@@ -55,7 +55,7 @@ the string is stored at: the event or constant pool type, the field, and for con
 referring to it (a method name is a `jdk.types.Symbol` referred to by `jdk.types.Method.name`). Its decision applies to
 every occurrence of the string, inline in events, in constant pools and in all chunks, so no copy of a redacted string
 remains. The one exception is the metadata (type, field and annotation names and values), which is not redacted:
-redacted strings that also occur there are reported in the result.
+redacted strings that also occur there, as whole strings or within longer strings, are reported in the result.
 
 Redaction refuses recordings it cannot fully decode, such as ones with events of undeclared types, rather than risk
 leaving strings it could not see.

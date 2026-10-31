@@ -37,9 +37,9 @@ import java.util.List;
 public final class StringLocation {
 	/**
 	 * The string also occurs in the metadata of the recording, as a type, field or annotation name
-	 * or value. Strings in the metadata are not redacted, so a redacted string with this location
-	 * remains in the redacted recording, which is reported in
-	 * {@link RedactionResult#redactedInMetadata()}.
+	 * or value, either as a whole string or within a longer one. Strings in the metadata are not
+	 * redacted, so a redacted string with this location remains in the redacted recording, which is
+	 * reported in {@link RedactionResult#redactedInMetadata()}.
 	 */
 	public static final StringLocation METADATA = new StringLocation("metadata", "strings", false, List.of());
 

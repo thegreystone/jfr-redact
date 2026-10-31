@@ -51,9 +51,9 @@ import se.hirt.jfr.redact.scan.StringCountMap;
  * which the {@link StringRedactor} decides on each string. The second pass writes the recording
  * with every occurrence of a redacted string replaced, wherever it is stored: inline in events, in
  * constant pools, and in every chunk. Strings in the metadata (type, field and annotation names and
- * values) are not redacted. A redacted string that also occurs in the metadata is reported in
- * {@link RedactionResult#redactedInMetadata()}, and is the only way a copy of a redacted string can
- * remain.
+ * values) are not redacted. A redacted string that also occurs in the metadata, as a whole string
+ * or within a longer one, is reported in {@link RedactionResult#redactedInMetadata()}, and is the
+ * only way a copy of a redacted string can remain.
  * <p>
  * Input and output must identify different files, including through links. The recording is written
  * to a temporary file beside the output, then published with an atomic replacement. Failed
