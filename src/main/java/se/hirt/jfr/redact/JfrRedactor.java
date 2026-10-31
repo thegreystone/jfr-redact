@@ -48,8 +48,8 @@ import se.hirt.jfr.redact.scan.StringCountMap;
  * Redacts the strings of a JFR recording into a new recording.
  * <p>
  * The input is read twice. The first pass collects every distinct string and its locations, after
- * which the {@link StringRedactor} decides on each string. The second pass writes the recording with
- * every occurrence of a redacted string replaced, wherever it is stored: inline in events, in
+ * which the {@link StringRedactor} decides on each string. The second pass writes the recording
+ * with every occurrence of a redacted string replaced, wherever it is stored: inline in events, in
  * constant pools, and in every chunk. Strings in the metadata (type, field and annotation names and
  * values) are not redacted. A redacted string that also occurs in the metadata is reported in
  * {@link RedactionResult#redactedInMetadata()}, and is the only way a copy of a redacted string can

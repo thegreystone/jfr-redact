@@ -36,9 +36,10 @@ import java.util.List;
  */
 public final class StringLocation {
 	/**
-	 * The string also occurs in the metadata of the recording, as a type, field or annotation name or
-	 * value. Strings in the metadata are not redacted, so a redacted string with this location remains
-	 * in the redacted recording, which is reported in {@link RedactionResult#redactedInMetadata()}.
+	 * The string also occurs in the metadata of the recording, as a type, field or annotation name
+	 * or value. Strings in the metadata are not redacted, so a redacted string with this location
+	 * remains in the redacted recording, which is reported in
+	 * {@link RedactionResult#redactedInMetadata()}.
 	 */
 	public static final StringLocation METADATA = new StringLocation("metadata", "strings", false, List.of());
 
@@ -71,17 +72,17 @@ public final class StringLocation {
 	}
 
 	/**
-	 * @return {@code true} if the string is stored in a constant pool, {@code false} if it is inlined
-	 *         in an event
+	 * @return {@code true} if the string is stored in a constant pool, {@code false} if it is
+	 *         inlined in an event
 	 */
 	public boolean isConstant() {
 		return constant;
 	}
 
 	/**
-	 * @return for strings in constant pools, the fields of other constants that refer to the constant
-	 *         holding the string, in the same chunk, as {@code owner.field}. For example, a method name
-	 *         is stored in a {@code jdk.types.Symbol} constant referred to by
+	 * @return for strings in constant pools, the fields of other constants that refer to the
+	 *         constant holding the string, in the same chunk, as {@code owner.field}. For example,
+	 *         a method name is stored in a {@code jdk.types.Symbol} constant referred to by
 	 *         {@code jdk.types.Method.name}. References from events are not included.
 	 */
 	public List<String> getReferrers() {
@@ -104,9 +105,9 @@ public final class StringLocation {
 	}
 
 	/**
-	 * @return {@code true} if this is a class name, in internal form such as {@code java/util/HashMap}:
-	 *         a constant referred to by {@code java.lang.Class.name} (JFR 1.0+) or {@code Class.name}
-	 *         (JFR 0.9)
+	 * @return {@code true} if this is a class name, in internal form such as
+	 *         {@code java/util/HashMap}: a constant referred to by {@code java.lang.Class.name}
+	 *         (JFR 1.0+) or {@code Class.name} (JFR 0.9)
 	 */
 	public boolean isClassName() {
 		return isReferredToBy("java.lang.Class.name", "Class.name");
@@ -134,7 +135,7 @@ public final class StringLocation {
 		return isReferredToBy("jdk.types.Package.name", "com.oracle.jfr.types.Package.name");
 	}
 
-	private boolean isReferredToBy(String... fields) {
+	private boolean isReferredToBy(String ... fields) {
 		for (String referrer : referrers) {
 			for (String field : fields) {
 				if (referrer.equals(field)) {
@@ -146,9 +147,9 @@ public final class StringLocation {
 	}
 
 	/**
-	 * @return {@code true} if this is the text of a thread dump, which contains thread names and class
-	 *         names: {@code jdk.ThreadDump.result} in JFR 1.0+, {@code vm/runtime/thread_dump.result}
-	 *         in JFR 0.9
+	 * @return {@code true} if this is the text of a thread dump, which contains thread names and
+	 *         class names: {@code jdk.ThreadDump.result} in JFR 1.0+,
+	 *         {@code vm/runtime/thread_dump.result} in JFR 0.9
 	 */
 	public boolean isThreadDump() {
 		return !constant && field.equals("result")
@@ -156,8 +157,8 @@ public final class StringLocation {
 	}
 
 	/**
-	 * @return {@code true} if this is the description of an old object sample or its GC root, such as
-	 *         {@code Thread Name: main}
+	 * @return {@code true} if this is the description of an old object sample or its GC root, such
+	 *         as {@code Thread Name: main}
 	 */
 	public boolean isOldObjectDescription() {
 		return constant && field.equals("description")
@@ -165,8 +166,8 @@ public final class StringLocation {
 	}
 
 	/**
-	 * @return {@code true} if strings at this location are documents embedding other strings, such as
-	 *         thread names, rather than single values: thread dumps and old object descriptions
+	 * @return {@code true} if strings at this location are documents embedding other strings, such
+	 *         as thread names, rather than single values: thread dumps and old object descriptions
 	 */
 	public boolean isComposite() {
 		return isThreadDump() || isOldObjectDescription();

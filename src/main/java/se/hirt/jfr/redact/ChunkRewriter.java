@@ -397,8 +397,8 @@ final class ChunkRewriter {
 	}
 
 	/**
-	 * Writes the event in {@code [eventStart, eventEnd)} with the patches applied, and a new size. The
-	 * size keeps its encoded width if it fits, as the JDK pads event sizes.
+	 * Writes the event in {@code [eventStart, eventEnd)} with the patches applied, and a new size.
+	 * The size keeps its encoded width if it fits, as the JDK pads event sizes.
 	 */
 	private void emit(int eventStart, int sizeLength, int eventEnd) {
 		flush(eventStart);

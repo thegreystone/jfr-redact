@@ -61,8 +61,8 @@ public final class RedactionVerifier {
 	}
 
 	/**
-	 * Redacts every string of at least {@code minLength} characters with a unique replacement, which
-	 * is shorter or longer than the original.
+	 * Redacts every string of at least {@code minLength} characters with a unique replacement,
+	 * which is shorter or longer than the original.
 	 */
 	public static StringRedactor aggressive(int minLength) {
 		int[] counter = new int[1];
@@ -150,8 +150,9 @@ public final class RedactionVerifier {
 	}
 
 	/** Searches the raw output for the longest redacted strings, as UTF-8 and UTF-16 */
-	private static List<String> rawSearch(Path output, Map<String, String> decisions, Map<String, long[]> kept,
-			List<String> reportedInMetadata) throws IOException {
+	private static List<String> rawSearch(
+		Path output, Map<String, String> decisions, Map<String, long[]> kept, List<String> reportedInMetadata)
+			throws IOException {
 		List<String> problems = new ArrayList<>();
 		byte[] bytes = Files.readAllBytes(output);
 		List<String> originals = new ArrayList<>(decisions.keySet());

@@ -62,7 +62,8 @@ class JfrRedactorTest {
 	}
 
 	@Test
-	void redactsEverywhereAndKeepsEverythingElse(@TempDir Path dir) throws Exception {
+	void redactsEverywhereAndKeepsEverythingElse(@TempDir
+	Path dir) throws Exception {
 		Path input = record(dir.resolve("input.jfr"));
 		Path output = dir.resolve("output.jfr");
 		Map<String, String> replacements = new LinkedHashMap<>();
@@ -95,7 +96,8 @@ class JfrRedactorTest {
 	}
 
 	@Test
-	void passesVerification(@TempDir Path dir) throws Exception {
+	void passesVerification(@TempDir
+	Path dir) throws Exception {
 		Path input = record(dir.resolve("input.jfr"));
 		List<String> problems = RedactionVerifier.verify(input, dir.resolve("output.jfr"),
 				RedactionVerifier.aggressive(4), true);
@@ -103,7 +105,8 @@ class JfrRedactorTest {
 	}
 
 	@Test
-	void identifiesMethodNamesByReferrer(@TempDir Path dir) throws Exception {
+	void identifiesMethodNamesByReferrer(@TempDir
+	Path dir) throws Exception {
 		Path input = record(dir.resolve("input.jfr"));
 		List<String> methodNames = new ArrayList<>();
 		JfrRedactor.redact(input, dir.resolve("output.jfr"), (value, locations) -> {
@@ -119,7 +122,8 @@ class JfrRedactorTest {
 	}
 
 	@Test
-	void reportsStringsAlsoInMetadata(@TempDir Path dir) throws Exception {
+	void reportsStringsAlsoInMetadata(@TempDir
+	Path dir) throws Exception {
 		Path input = record(dir.resolve("input.jfr"));
 		RedactionResult result = JfrRedactor.redact(input, dir.resolve("output.jfr"),
 				(value, locations) -> locations.contains(StringLocation.METADATA) ? "<M>" : value);
@@ -128,7 +132,8 @@ class JfrRedactorTest {
 	}
 
 	@Test
-	void keepingEverythingCopiesTheRecording(@TempDir Path dir) throws Exception {
+	void keepingEverythingCopiesTheRecording(@TempDir
+	Path dir) throws Exception {
 		Path input = record(dir.resolve("input.jfr"));
 		Path output = dir.resolve("output.jfr");
 		RedactionResult result = JfrRedactor.redact(input, output, (value, locations) -> value);

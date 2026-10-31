@@ -110,6 +110,11 @@ mvn package                 # JVM build: java -jar target/jfr-redact-<version>.j
 mvn -Pnative package        # Native image: target/jfr-redact (requires GraalVM as JAVA_HOME)
 ```
 
+Spotless checks Java formatting during Maven's `validate` phase, so normal builds enforce it. Run
+`mvn spotless:apply` to format the sources or `mvn spotless:check` to check them. It uses the same Eclipse formatter
+profile as `jmc-jev-mcp`, copied unchanged into `config/formatter/jmc-jev-mcp-formatting.xml`: one tab per indentation
+level, 120-column code and 100-column comments.
+
 ## License
 
 BSD 3-Clause, see [LICENSE](LICENSE).

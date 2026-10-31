@@ -81,7 +81,10 @@ final class LegacyMetadata {
 	private final List<Type> eventTypes = new ArrayList<>();
 	private final List<Type> poolTypes = new ArrayList<>();
 	private final List<String> strings = new ArrayList<>();
-	/** Types whose refTargets hold content type ids until resolved, pools share those of their struct */
+	/**
+	 * Types whose refTargets hold content type ids until resolved, pools share those of their
+	 * struct
+	 */
 	private final List<Type> unresolvedTypes = new ArrayList<>();
 
 	private LegacyMetadata() {

@@ -41,8 +41,8 @@ import se.hirt.jfr.redact.StringRedactor;
 
 /**
  * Replaces personal tokens, such as user, host and domain names, wherever they occur inside any
- * string of a recording, for example inside paths, environment variables and thread names. Tokens are
- * replaced in the order given, so put longer tokens before tokens they contain.
+ * string of a recording, for example inside paths, environment variables and thread names. Tokens
+ * are replaced in the order given, so put longer tokens before tokens they contain.
  * <p>
  * Usage: {@code java -cp target/classes:target/test-classes
  * se.hirt.jfr.redact.examples.ScrubPersonalData <recording.jfr> <scrubbed.jfr> <token>=<replacement>...}

@@ -94,7 +94,8 @@ class MainTest {
 	}
 
 	@Test
-	void referenceSortCountsReferencesAndOrdersTsv(@TempDir Path dir) throws Exception {
+	void referenceSortCountsReferencesAndOrdersTsv(@TempDir
+	Path dir) throws Exception {
 		Path tsv = dir.resolve("strings.tsv");
 		String output = run("scan", "--sort", "references", "--top", "0", "--out", tsv.toString(),
 				recording().toString());
@@ -140,17 +141,16 @@ class MainTest {
 			}
 			assertTrue(occurrenceTieBreakExercised, "the fixture must exercise occurrence tie breaking for " + key);
 			assertTrue(output.contains(key.equals("inlined") ? "most inlined" : "longest"));
-			assertEquals(rows.subList(0, 5),
-					tableRows(run("scan", "--table", "--sort", key, "--top", "5", recording)));
+			assertEquals(rows.subList(0, 5), tableRows(run("scan", "--table", "--sort", key, "--top", "5", recording)));
 		}
 	}
 
 	@Test
-	void inlineAndLengthSortsOrderPlainOutputAndTsvWithoutCountingReferences(@TempDir Path dir) throws Exception {
+	void inlineAndLengthSortsOrderPlainOutputAndTsvWithoutCountingReferences(@TempDir
+	Path dir) throws Exception {
 		for (String key : List.of("inlined", "length")) {
 			Path tsv = dir.resolve(key + ".tsv");
-			String output = run("scan", "--sort", key, "--top", "5", "--out", tsv.toString(),
-					recording().toString());
+			String output = run("scan", "--sort", key, "--top", "5", "--out", tsv.toString(), recording().toString());
 			assertFalse(output.contains("References:"), key + " must not enable reference counting");
 			List<String> lines = Files.readAllLines(tsv);
 			assertEquals("inline\tconstantPool\tstring", lines.getFirst());
@@ -177,7 +177,8 @@ class MainTest {
 	}
 
 	@Test
-	void lengthSortCountsSupplementaryCharactersOnce(@TempDir Path dir) throws Exception {
+	void lengthSortCountsSupplementaryCharactersOnce(@TempDir
+	Path dir) throws Exception {
 		Path file = dir.resolve("unicode-length.jfr");
 		try (Recording recording = new Recording()) {
 			recording.enable(LengthEvent.class);
@@ -190,8 +191,7 @@ class MainTest {
 			recording.stop();
 			recording.dump(file);
 		}
-		List<TableRow> rows = tableRows(run("scan", "--table", "--sort", "length", "--top", "10000",
-				file.toString()));
+		List<TableRow> rows = tableRows(run("scan", "--table", "--sort", "length", "--top", "10000", file.toString()));
 		TableRow emoji = rows.stream().filter(row -> row.value().equals("~".repeat(20))).findFirst().orElseThrow();
 		TableRow longer = rows.stream().filter(row -> row.value().equals("A".repeat(30))).findFirst().orElseThrow();
 		TableRow tied = rows.stream().filter(row -> row.value().equals("B".repeat(20))).findFirst().orElseThrow();
@@ -212,7 +212,7 @@ class MainTest {
 		return Path.of(MainTest.class.getResource("/recordings/jdk9-basic.jfr").toURI());
 	}
 
-	private static String run(String... args) throws Exception {
+	private static String run(String ... args) throws Exception {
 		ByteArrayOutputStream output = new ByteArrayOutputStream();
 		ByteArrayOutputStream errors = new ByteArrayOutputStream();
 		try (PrintStream out = new PrintStream(output, true, StandardCharsets.UTF_8);

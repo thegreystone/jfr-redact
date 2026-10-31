@@ -52,7 +52,8 @@ class FixtureTest {
 	@ParameterizedTest
 	@ValueSource(strings = {"jrockit-r28-transitions.jfr", "jdk9-basic.jfr", "jdk9-weblogic-medrec.jfr",
 			"jdk21-jmc.jfr"})
-	void redactsEveryStringCorrectly(String name, @TempDir Path dir) throws Exception {
+	void redactsEveryStringCorrectly(String name, @TempDir
+	Path dir) throws Exception {
 		boolean jdkCanParse = !name.startsWith("jrockit");
 		List<String> problems = RedactionVerifier.verify(recording(name), dir.resolve(name),
 				RedactionVerifier.aggressive(4), jdkCanParse);
@@ -60,7 +61,8 @@ class FixtureTest {
 	}
 
 	@Test
-	void redactsPatientData(@TempDir Path dir) throws Exception {
+	void redactsPatientData(@TempDir
+	Path dir) throws Exception {
 		Path output = dir.resolve("redacted.jfr");
 		JfrRedactor.redact(recording("jdk9-weblogic-medrec.jfr"), output, RedactPatientData.redactor());
 

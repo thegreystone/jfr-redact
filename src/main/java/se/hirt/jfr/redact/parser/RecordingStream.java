@@ -33,12 +33,11 @@ import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
 
 /**
- * Cursor over the in-memory bytes of a single chunk. Bounds are not checked explicitly; reading past
- * the backing array surfaces as an {@link ArrayIndexOutOfBoundsException}.
+ * Cursor over the in-memory bytes of a single chunk. Bounds are not checked explicitly; reading
+ * past the backing array surfaces as an {@link ArrayIndexOutOfBoundsException}.
  */
 public final class RecordingStream {
-	private static final VarHandle SHORT_BE = MethodHandles.byteArrayViewVarHandle(short[].class,
-			ByteOrder.BIG_ENDIAN);
+	private static final VarHandle SHORT_BE = MethodHandles.byteArrayViewVarHandle(short[].class, ByteOrder.BIG_ENDIAN);
 	private static final VarHandle INT_BE = MethodHandles.byteArrayViewVarHandle(int[].class, ByteOrder.BIG_ENDIAN);
 	private static final VarHandle LONG_BE = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.BIG_ENDIAN);
 

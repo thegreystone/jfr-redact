@@ -193,8 +193,8 @@ public final class ChunkReader {
 	}
 
 	/**
-	 * Offset of the checkpoint the chunk header (JFR 1.0+) or the metadata (JFR 0.9) points to, 0 if
-	 * none
+	 * Offset of the checkpoint the chunk header (JFR 1.0+) or the metadata (JFR 0.9) points to, 0
+	 * if none
 	 */
 	public long constantPoolOffset() {
 		return constantPoolOffset;

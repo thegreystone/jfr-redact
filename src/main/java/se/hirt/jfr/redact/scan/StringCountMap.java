@@ -77,8 +77,8 @@ public final class StringCountMap {
 				counts[entry * CATEGORIES + category]++;
 				return entry;
 			}
-			if (hashes[entry] == hash && lengths[entry] == length && Arrays.equals(arena, offsets[entry],
-					offsets[entry] + length, source, offset, offset + length)) {
+			if (hashes[entry] == hash && lengths[entry] == length
+					&& Arrays.equals(arena, offsets[entry], offsets[entry] + length, source, offset, offset + length)) {
 				counts[entry * CATEGORIES + category]++;
 				return entry;
 			}
@@ -95,8 +95,8 @@ public final class StringCountMap {
 	}
 
 	/**
-	 * @return the entry index of the UTF-8 encoded string in {@code source[offset, offset + length)},
-	 *         or -1 if not present
+	 * @return the entry index of the UTF-8 encoded string in
+	 *         {@code source[offset, offset + length)}, or -1 if not present
 	 */
 	public int find(byte[] source, int offset, int length) {
 		int hash = hash(source, offset, length);
@@ -105,8 +105,8 @@ public final class StringCountMap {
 			if (entry < 0) {
 				return -1;
 			}
-			if (hashes[entry] == hash && lengths[entry] == length && Arrays.equals(arena, offsets[entry],
-					offsets[entry] + length, source, offset, offset + length)) {
+			if (hashes[entry] == hash && lengths[entry] == length
+					&& Arrays.equals(arena, offsets[entry], offsets[entry] + length, source, offset, offset + length)) {
 				return entry;
 			}
 		}

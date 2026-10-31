@@ -60,7 +60,8 @@ class StringScannerTest {
 	}
 
 	@Test
-	void countsInlineAndPooledStrings(@TempDir Path dir) throws Exception {
+	void countsInlineAndPooledStrings(@TempDir
+	Path dir) throws Exception {
 		Path file = dir.resolve("strings.jfr");
 		try (Recording recording = new Recording()) {
 			recording.enable(MessageEvent.class);
@@ -100,7 +101,8 @@ class StringScannerTest {
 	}
 
 	@Test
-	void countsReferences(@TempDir Path dir) throws Exception {
+	void countsReferences(@TempDir
+	Path dir) throws Exception {
 		Path file = dir.resolve("references.jfr");
 		try (Recording recording = new Recording()) {
 			recording.enable(MessageEvent.class);
@@ -118,8 +120,9 @@ class StringScannerTest {
 		assertEquals(1, scanner.getChunkCount());
 
 		int repeatedEntry = strings.indexOf(REPEATED);
-		assertEquals(1000, strings.getCount(repeatedEntry, StringScanner.INLINE)
-				+ strings.getReferenceCount(repeatedEntry), "every event either inlines or references it");
+		assertEquals(1000,
+				strings.getCount(repeatedEntry, StringScanner.INLINE) + strings.getReferenceCount(repeatedEntry),
+				"every event either inlines or references it");
 
 		int shortEntry = strings.indexOf(SHORT);
 		assertEquals(0, strings.getReferenceCount(shortEntry), "short strings are never pooled");
@@ -136,7 +139,8 @@ class StringScannerTest {
 	}
 
 	@Test
-	void decodesAllEventsOfDefaultRecording(@TempDir Path dir) throws Exception {
+	void decodesAllEventsOfDefaultRecording(@TempDir
+	Path dir) throws Exception {
 		Path file = dir.resolve("default.jfr");
 		try (Recording recording = new Recording(Configuration.getConfiguration("profile"))) {
 			recording.start();

@@ -54,14 +54,9 @@ import se.hirt.jfr.redact.parser.StreamingChunkParser;
 class RuleRedactorTest {
 	@Test
 	void matching() {
-		RuleRedactor redactor = RuleRedactor.builder()
-				.replace("exact", "E")
-				.replace("java.util.*", "utilz.*")
-				.replace("com.acme.*", "REDACTED")
-				.replace("*.secret", "*.hidden")
-				.replace("*password*", "\\*\\*\\*")
-				.replace("*java/util/*", "*utilz/*")
-				.build();
+		RuleRedactor redactor = RuleRedactor.builder().replace("exact", "E").replace("java.util.*", "utilz.*")
+				.replace("com.acme.*", "REDACTED").replace("*.secret", "*.hidden").replace("*password*", "\\*\\*\\*")
+				.replace("*java/util/*", "*utilz/*").build();
 		assertEquals("E", redactor.redact("exact"));
 		assertEquals("exactly", redactor.redact("exactly"));
 		assertEquals("utilz.HashMap", redactor.redact("java.util.HashMap"));
@@ -129,7 +124,8 @@ class RuleRedactorTest {
 	}
 
 	@Test
-	void hashesThreadNamesInRecording(@TempDir Path dir) throws Exception {
+	void hashesThreadNamesInRecording(@TempDir
+	Path dir) throws Exception {
 		Path input = dir.resolve("input.jfr");
 		String secretName = "payroll-batch-worker-42";
 		try (Recording recording = new Recording()) {
@@ -190,7 +186,8 @@ class RuleRedactorTest {
 		String worker = redactor.redact("worker", List.of(threadName));
 		String worker2 = redactor.redact("worker-2", List.of(threadName));
 
-		String result = redactor.redact(dump, List.of(new StringLocation("jdk.ThreadDump", "result", false, List.of())));
+		String result = redactor.redact(dump,
+				List.of(new StringLocation("jdk.ThreadDump", "result", false, List.of())));
 		assertTrue(result.contains('"' + main + "\" #3"), result);
 		assertTrue(result.contains('"' + worker + "\" daemon") && result.contains('"' + worker + "\":"), result);
 		assertTrue(result.contains("which is held by \"" + worker2 + '"'), result);
@@ -213,7 +210,8 @@ class RuleRedactorTest {
 	}
 
 	@Test
-	void hashesThreadNamesInThreadDumpEvents(@TempDir Path dir) throws Exception {
+	void hashesThreadNamesInThreadDumpEvents(@TempDir
+	Path dir) throws Exception {
 		Path input = dir.resolve("input.jfr");
 		String secretName = "patient-records-exporter";
 		java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
@@ -267,8 +265,8 @@ class RuleRedactorTest {
 		assertEquals(hashed, redactor.redact("com/acme/secret/Foo", List.of(className)), "stable");
 		assertTrue(!hashed.equals(redactor.redact("com/acme/secret/Bar", List.of(className))));
 		String hash = hashed.substring("com/acme/".length());
-		assertEquals("(ILcom/acme/" + hash + ";[Ljava/lang/String;)Lcom/acme/" + hash + ";",
-				redactor.redact("(ILcom/acme/secret/Foo;[Ljava/lang/String;)Lcom/acme/secret/Foo;", List.of(descriptor)));
+		assertEquals("(ILcom/acme/" + hash + ";[Ljava/lang/String;)Lcom/acme/" + hash + ";", redactor
+				.redact("(ILcom/acme/secret/Foo;[Ljava/lang/String;)Lcom/acme/secret/Foo;", List.of(descriptor)));
 		assertEquals("org/other/Foo", redactor.redact("org/other/Foo", List.of(className)));
 		assertEquals("com/acme/secret/Foo", redactor.redact("com/acme/secret/Foo"), "only at class name locations");
 
@@ -278,8 +276,8 @@ class RuleRedactorTest {
 				\t- locked <0x00000007> (a com.acme.secret.Foo)
 				\tat java.lang.Thread.run(java.base@25/Thread.java:1583)
 				""";
-		String rewritten = redactor.redact(dump, List.of(new StringLocation("jdk.ThreadDump", "result", false,
-				List.of())));
+		String rewritten = redactor.redact(dump,
+				List.of(new StringLocation("jdk.ThreadDump", "result", false, List.of())));
 		assertTrue(rewritten.matches("(?s).*at com\\.acme\\." + java.util.regex.Pattern.quote(hash)
 				+ "\\.run\\([A-Za-z0-9_$]{12,13}\\.java:12\\).*"), rewritten);
 		assertTrue(!rewritten.contains("Foo.java") && !rewritten.contains("secret"), rewritten);
@@ -315,7 +313,8 @@ class RuleRedactorTest {
 	}
 
 	@Test
-	void hashesMethodNamesInRecording(@TempDir Path dir) throws Exception {
+	void hashesMethodNamesInRecording(@TempDir
+	Path dir) throws Exception {
 		Path input = dir.resolve("input.jfr");
 		try (Recording recording = new Recording()) {
 			recording.enable(WorkEvent.class);
@@ -357,7 +356,8 @@ class RuleRedactorTest {
 	}
 
 	@Test
-	void hashesClassNamesInRecording(@TempDir Path dir) throws Exception {
+	void hashesClassNamesInRecording(@TempDir
+	Path dir) throws Exception {
 		Path input = dir.resolve("input.jfr");
 		try (Recording recording = new Recording()) {
 			recording.enable(WorkEvent.class);
@@ -435,7 +435,8 @@ class RuleRedactorTest {
 	}
 
 	@Test
-	void renamesJavaUtilEverywhere(@TempDir Path dir) throws Exception {
+	void renamesJavaUtilEverywhere(@TempDir
+	Path dir) throws Exception {
 		Path input = dir.resolve("input.jfr");
 		try (Recording recording = new Recording()) {
 			recording.enable(WorkEvent.class);

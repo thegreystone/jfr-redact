@@ -82,8 +82,8 @@ final class LocationCollector implements ChunkParserListener {
 	private int checkpointStringCount;
 
 	/**
-	 * Per chunk: struct nesting contexts, each an owner, path prefix and constant flag, with per field
-	 * caches of the child contexts and field locations (-1 until computed)
+	 * Per chunk: struct nesting contexts, each an owner, path prefix and constant flag, with per
+	 * field caches of the child contexts and field locations (-1 until computed)
 	 */
 	private final List<String> contextOwners = new ArrayList<>();
 	private final List<String> contextPaths = new ArrayList<>();
@@ -93,7 +93,9 @@ final class LocationCollector implements ChunkParserListener {
 	private final List<int[]> contextFieldLocations = new ArrayList<>();
 	private int[] rootContexts;
 
-	/** Per chunk: the strings of each constant, and the fields of other constants referring to it */
+	/**
+	 * Per chunk: the strings of each constant, and the fields of other constants referring to it
+	 */
 	private final ConstantTable constants = new ConstantTable();
 	private ConstantRecord currentConstant;
 	/** Recently added references, to skip repeated ones, cleared per chunk */
@@ -421,8 +423,7 @@ final class LocationCollector implements ChunkParserListener {
 		}
 	}
 
-	private void readEventValue(RecordingStream stream, int op, Type type, int field, int context)
-			throws IOException {
+	private void readEventValue(RecordingStream stream, int op, Type type, int field, int context) throws IOException {
 		int kind = op & ChunkTypes.KIND_MASK;
 		switch (kind) {
 		case ChunkTypes.KIND_FIXED1 -> stream.skip(1);
@@ -473,8 +474,8 @@ final class LocationCollector implements ChunkParserListener {
 		case ChunkTypes.KIND_FIXED4 -> stream.skip(4);
 		case ChunkTypes.KIND_FIXED8 -> stream.skip(8);
 		case ChunkTypes.KIND_VARINT -> stream.skipVarint();
-		case ChunkTypes.KIND_STRING, ChunkTypes.KIND_UTF8, ChunkTypes.KIND_UTF16 -> readConstantString(stream, kind,
-				context, field, type);
+		case ChunkTypes.KIND_STRING, ChunkTypes.KIND_UTF8, ChunkTypes.KIND_UTF16 ->
+			readConstantString(stream, kind, context, field, type);
 		case ChunkTypes.KIND_REF -> {
 			Type pool = types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT);
 			addReference(pool.index, readKey(stream, pool.keyKind), fieldLocation(context, type, field));
@@ -622,9 +623,9 @@ final class LocationCollector implements ChunkParserListener {
 		Integer id = locationIds.get(key);
 		if (id == null) {
 			id = locations.size();
-			locations.add(new StringLocation(fieldLocationOwners.get(fieldLocation),
-					fieldLocationPaths.get(fieldLocation), fieldLocationConstant.get(fieldLocation),
-					referrerSets.get(referrerSet)));
+			locations.add(
+					new StringLocation(fieldLocationOwners.get(fieldLocation), fieldLocationPaths.get(fieldLocation),
+							fieldLocationConstant.get(fieldLocation), referrerSets.get(referrerSet)));
 			locationIds.put(key, id);
 		}
 		return id;

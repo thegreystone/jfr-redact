@@ -67,14 +67,20 @@ public final class StringScanner implements ChunkParserListener {
 	private static final byte STRING_ENCODING_LATIN1_BYTE_ARRAY = 5;
 	/** Returned by the string readers for a null string */
 	private static final int NO_STRING = -1;
-	/** Returned by the string readers for a reference to a string constant, see {@link #lastStringReference} */
+	/**
+	 * Returned by the string readers for a reference to a string constant, see
+	 * {@link #lastStringReference}
+	 */
 	private static final int STRING_REFERENCE = -2;
 
 	private final StringCountMap strings = new StringCountMap();
 	private final boolean decodeAllEvents;
 	/** Null unless references are counted */
 	private final ReferenceCounter references;
-	/** Events that cannot contain inlined strings can be skipped: not validating, nor counting references */
+	/**
+	 * Events that cannot contain inlined strings can be skipped: not validating, nor counting
+	 * references
+	 */
 	private final boolean skipEventsWithoutStrings;
 	private ChunkTypes types;
 	private boolean legacy;
@@ -287,14 +293,13 @@ public final class StringScanner implements ChunkParserListener {
 		case ChunkTypes.KIND_FIXED8 -> stream.skip(8);
 		case ChunkTypes.KIND_UTF8 -> readUtf8(stream, category);
 		case ChunkTypes.KIND_UTF16 -> readUtf16(stream, category);
-		case ChunkTypes.KIND_STRUCT -> readLegacyFields(stream, types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT).fields,
-				category);
+		case ChunkTypes.KIND_STRUCT ->
+			readLegacyFields(stream, types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT).fields, category);
 		default -> throw new IOException("Unexpected field kind " + (op & ChunkTypes.KIND_MASK) + " in JFR 0.9");
 		}
 	}
 
-	private void readEventCountingReferences(Type type, RecordingStream stream, int payloadSize)
-			throws IOException {
+	private void readEventCountingReferences(Type type, RecordingStream stream, int payloadSize) throws IOException {
 		if (!type.containsStrings && !type.containsReferences && !decodeAllEvents) {
 			return;
 		}
@@ -384,8 +389,8 @@ public final class StringScanner implements ChunkParserListener {
 			Type pool = types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT);
 			references.reference(pool.index, readKey(stream, pool.keyKind));
 		}
-		default -> readReferencingFields(stream, types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT).referenceFields,
-				category);
+		default ->
+			readReferencingFields(stream, types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT).referenceFields, category);
 		}
 	}
 
@@ -474,8 +479,9 @@ public final class StringScanner implements ChunkParserListener {
 	}
 
 	/**
-	 * Same as {@link #readString}, but returns what was read, for the reference counting. A separate
-	 * copy, since the return value measurably slows down the walks without reference counting.
+	 * Same as {@link #readString}, but returns what was read, for the reference counting. A
+	 * separate copy, since the return value measurably slows down the walks without reference
+	 * counting.
 	 *
 	 * @return the entry index of the string, {@link #NO_STRING} or {@link #STRING_REFERENCE}
 	 */
@@ -677,7 +683,8 @@ public final class StringScanner implements ChunkParserListener {
 	}
 
 	/**
-	 * @return the number of references to constants that were never defined in the chunk, if counted
+	 * @return the number of references to constants that were never defined in the chunk, if
+	 *         counted
 	 */
 	public long getUnresolvedReferenceCount() {
 		return references == null ? 0 : references.getUnresolvedReferenceCount();
@@ -688,8 +695,8 @@ public final class StringScanner implements ChunkParserListener {
 	}
 
 	/**
-	 * @return the number of events and checkpoints where the decoded size did not match the declared
-	 *         size, which should always be zero for well formed recordings
+	 * @return the number of events and checkpoints where the decoded size did not match the
+	 *         declared size, which should always be zero for well formed recordings
 	 */
 	public long getMisalignedCount() {
 		return misalignedCount;

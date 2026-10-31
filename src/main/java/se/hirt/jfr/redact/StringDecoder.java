@@ -34,9 +34,10 @@ import se.hirt.jfr.redact.parser.ChunkTypes;
 import se.hirt.jfr.redact.parser.RecordingStream;
 
 /**
- * Decodes a string value of any encoding into its UTF-8 bytes, which is how strings are keyed. After
- * {@link #read(RecordingStream, int)} returned {@link #STRING}, the UTF-8 bytes are in
- * {@code array[offset, offset + length)}, either in the chunk buffer or in an internal scratch buffer.
+ * Decodes a string value of any encoding into its UTF-8 bytes, which is how strings are keyed.
+ * After {@link #read(RecordingStream, int)} returned {@link #STRING}, the UTF-8 bytes are in
+ * {@code array[offset, offset + length)}, either in the chunk buffer or in an internal scratch
+ * buffer.
  */
 final class StringDecoder {
 	static final int NULL = 0;

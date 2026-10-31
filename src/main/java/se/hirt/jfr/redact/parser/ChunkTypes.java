@@ -87,7 +87,9 @@ public final class ChunkTypes {
 		public int[] fields;
 		/** The field names, parallel to {@link #fields} */
 		public String[] fieldNames;
-		/** True if a value of this type can contain an inlined (not constant pool referenced) string */
+		/**
+		 * True if a value of this type can contain an inlined (not constant pool referenced) string
+		 */
 		public boolean containsStrings;
 		/**
 		 * Like {@link #fields}, but with references to constants that contain strings encoded as
@@ -96,7 +98,9 @@ public final class ChunkTypes {
 		public int[] referenceFields;
 		/** True if a value of this type can contain a reference to a constant containing strings */
 		public boolean containsReferences;
-		/** Per field, the type index of the referenced constant pool, or -1. Null if no references. */
+		/**
+		 * Per field, the type index of the referenced constant pool, or -1. Null if no references.
+		 */
 		int[] refTargets;
 
 		Type(int index, long id, String name, boolean isString, int keyKind) {
@@ -231,8 +235,8 @@ public final class ChunkTypes {
 			names[i] = field.name;
 			Type fieldType = byId.get(field.typeId);
 			if (fieldType == null) {
-				throw new IOException("Field " + element.name + "." + field.name + " has undeclared type id "
-						+ field.typeId);
+				throw new IOException(
+						"Field " + element.name + "." + field.name + " has undeclared type id " + field.typeId);
 			}
 			if (field.constantPool) {
 				if (refTargets == null) {

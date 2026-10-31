@@ -48,7 +48,9 @@ final class ReferenceCounter {
 	private long[] keys = new long[1 << 11];
 	private int[] pools = new int[1 << 11];
 	private long[] counts = new long[1 << 11];
-	/** Range of the constant's strings in {@link #strings}, start is -1 until the constant is seen */
+	/**
+	 * Range of the constant's strings in {@link #strings}, start is -1 until the constant is seen
+	 */
 	private int[] starts = new int[1 << 11];
 	private int[] ends = new int[1 << 11];
 

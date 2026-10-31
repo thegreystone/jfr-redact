@@ -36,8 +36,9 @@ import java.nio.file.StandardOpenOption;
 
 /**
  * Parses a recording one chunk at a time, using a {@link ChunkReader}, so memory use is bounded by
- * the largest chunk rather than the recording. The metadata, normally found at the end of the chunk,
- * is reported first, followed by the events and checkpoints in stream order. Not thread-safe.
+ * the largest chunk rather than the recording. The metadata, normally found at the end of the
+ * chunk, is reported first, followed by the events and checkpoints in stream order. Not
+ * thread-safe.
  */
 public final class StreamingChunkParser {
 	private static final long METADATA_TYPE = 0;

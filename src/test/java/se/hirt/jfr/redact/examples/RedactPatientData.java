@@ -38,9 +38,9 @@ import se.hirt.jfr.redact.RuleRedactor;
 import se.hirt.jfr.redact.StringRedactor;
 
 /**
- * Redacts the patient records demo application in {@code jdk9-weblogic-medrec.jfr}: hashes the thread
- * names and the application class names, and replaces e-mail addresses wherever they occur, such as
- * in logged SQL statements.
+ * Redacts the patient records demo application in {@code jdk9-weblogic-medrec.jfr}: hashes the
+ * thread names and the application class names, and replaces e-mail addresses wherever they occur,
+ * such as in logged SQL statements.
  * <p>
  * Usage: {@code java -cp target/classes:target/test-classes
  * se.hirt.jfr.redact.examples.RedactPatientData <recording.jfr> <redacted.jfr>}
@@ -52,10 +52,7 @@ public final class RedactPatientData {
 	}
 
 	public static StringRedactor redactor() {
-		return RuleRedactor.builder()
-				.hashThreadNames()
-				.hashClassNames("com\\.bea\\.medrec\\.(.*)")
-				.build()
+		return RuleRedactor.builder().hashThreadNames().hashClassNames("com\\.bea\\.medrec\\.(.*)").build()
 				.orElse((value, locations) -> EMAIL.matcher(value).replaceAll("<EMAIL>"));
 	}
 

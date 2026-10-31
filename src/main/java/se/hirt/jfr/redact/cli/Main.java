@@ -257,8 +257,7 @@ public final class Main {
 			return value;
 		};
 		long start = System.nanoTime();
-		RedactionResult result = JfrRedactor.redact(files.get(0), files.get(1),
-				globs.build().orElse(regexRedactor));
+		RedactionResult result = JfrRedactor.redact(files.get(0), files.get(1), globs.build().orElse(regexRedactor));
 		double millis = (System.nanoTime() - start) / 1e6;
 		out.printf("Redacted %s into %s in %.1f ms%n", files.get(0), files.get(1), millis);
 		out.printf("Strings: %,d of %,d redacted, %,d stored occurrences replaced%n", result.redactedStringCount(),
@@ -269,7 +268,8 @@ public final class Main {
 		if (!result.redactedInMetadata().isEmpty()) {
 			err.printf("Warning: %,d redacted strings also occur in the metadata, where they remain:%n",
 					result.redactedInMetadata().size());
-			List<String> shown = result.redactedInMetadata().subList(0, Math.min(10, result.redactedInMetadata().size()));
+			List<String> shown = result.redactedInMetadata().subList(0,
+					Math.min(10, result.redactedInMetadata().size()));
 			for (String s : shown) {
 				err.println("  " + toTableCell(s));
 			}
@@ -343,8 +343,7 @@ public final class Main {
 		}
 	}
 
-	private static void printTable(PrintStream out, StringCountMap strings, Integer[] sorted, int top,
-			SortOrder sort) {
+	private static void printTable(PrintStream out, StringCountMap strings, Integer[] sorted, int top, SortOrder sort) {
 		String format = "%-" + TABLE_STRING_WIDTH + "s %10s %12s %12s %12s%n";
 		out.println();
 		out.printf(format, "String", "Length", "Occurrences", "Inlined", "References");

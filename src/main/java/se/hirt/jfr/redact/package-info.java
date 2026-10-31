@@ -37,9 +37,7 @@
  *
  * <pre>{@code
  * RedactionResult result = JfrRedactor.redact(Path.of("in.jfr"), Path.of("out.jfr"),
- * 		RuleRedactor.builder()
- * 				.replace("java.util.*", "utilz.*")
- * 				.build());
+ * 		RuleRedactor.builder().replace("java.util.*", "utilz.*").build());
  * }</pre>
  *
  * Note that class and package names are stored in their internal form in recordings, such as

@@ -86,8 +86,8 @@ public final class ChunkMetadata {
 	}
 
 	/**
-	 * Elements form a tree (root, metadata, class, field, annotation, setting, region). Only classes
-	 * and their direct field children are kept.
+	 * Elements form a tree (root, metadata, class, field, annotation, setting, region). Only
+	 * classes and their direct field children are kept.
 	 */
 	private void readElement(RecordingStream stream, String[] strings, ClassElement parent) throws IOException {
 		String elementName = strings[(int) stream.readVarint()];

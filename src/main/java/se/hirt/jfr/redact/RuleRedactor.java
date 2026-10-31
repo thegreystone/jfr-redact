@@ -66,26 +66,45 @@ import javax.crypto.spec.SecretKeySpec;
  * always one of {@code equals}, {@code startsWith}, {@code endsWith} or {@code contains}:
  * <table>
  * <caption>Patterns and replacements</caption>
- * <tr><th>Pattern</th><th>Matches</th><th>Replacement</th></tr>
- * <tr><td>{@code java/util}</td><td>exactly the text</td><td>a fixed string</td></tr>
- * <tr><td>{@code java.util.*}</td><td>strings starting with the text</td><td>a fixed string, or one
- * with a {@code *} which is replaced by the rest of the string, as in {@code utilz.*}</td></tr>
- * <tr><td>{@code *.internal}</td><td>strings ending with the text</td><td>a fixed string, or one with a
- * {@code *} which is replaced by the start of the string</td></tr>
- * <tr><td>{@code *java/util/*}</td><td>strings containing the text</td><td>a fixed string, or
- * {@code *text*} to replace every occurrence of the matched text, as in {@code *utilz/*}</td></tr>
- * <tr><td>{@code *}</td><td>every string</td><td>a fixed string</td></tr>
+ * <tr>
+ * <th>Pattern</th>
+ * <th>Matches</th>
+ * <th>Replacement</th>
+ * </tr>
+ * <tr>
+ * <td>{@code java/util}</td>
+ * <td>exactly the text</td>
+ * <td>a fixed string</td>
+ * </tr>
+ * <tr>
+ * <td>{@code java.util.*}</td>
+ * <td>strings starting with the text</td>
+ * <td>a fixed string, or one with a {@code *} which is replaced by the rest of the string, as in
+ * {@code utilz.*}</td>
+ * </tr>
+ * <tr>
+ * <td>{@code *.internal}</td>
+ * <td>strings ending with the text</td>
+ * <td>a fixed string, or one with a {@code *} which is replaced by the start of the string</td>
+ * </tr>
+ * <tr>
+ * <td>{@code *java/util/*}</td>
+ * <td>strings containing the text</td>
+ * <td>a fixed string, or {@code *text*} to replace every occurrence of the matched text, as in
+ * {@code *utilz/*}</td>
+ * </tr>
+ * <tr>
+ * <td>{@code *}</td>
+ * <td>every string</td>
+ * <td>a fixed string</td>
+ * </tr>
  * </table>
  * A literal {@code *} is written as {@code \*}, in patterns as well as replacements, so
- * {@code "\\*\\*\\*"} in Java source is the replacement {@code ***}.
- * Example:
+ * {@code "\\*\\*\\*"} in Java source is the replacement {@code ***}. Example:
  *
  * <pre>{@code
- * StringRedactor redactor = RuleRedactor.builder()
- * 		.hashThreadNames()
- * 		.renamePackage("java.util", "utilz")
- * 		.replace("*password*", "<REDACTED>")
- * 		.build();
+ * StringRedactor redactor = RuleRedactor.builder().hashThreadNames().renamePackage("java.util", "utilz")
+ * 		.replace("*password*", "<REDACTED>").build();
  * }</pre>
  *
  * Some strings are documents embedding other strings, see {@link StringLocation#isComposite()}.
@@ -93,9 +112,9 @@ import javax.crypto.spec.SecretKeySpec;
  * the same way as elsewhere, in the headers and lock owners of thread dumps and in the
  * {@code Thread Name:} of old object descriptions, and packages are renamed in class names.
  * <p>
- * Since a decision applies to every occurrence of a string, a rule matching a string at one location
- * replaces it everywhere. For example, hashing the thread name {@code main} also renames methods
- * named {@code main}.
+ * Since a decision applies to every occurrence of a string, a rule matching a string at one
+ * location replaces it everywhere. For example, hashing the thread name {@code main} also renames
+ * methods named {@code main}.
  */
 public final class RuleRedactor implements StringRedactor {
 	private final Rule[] rules;
@@ -129,8 +148,8 @@ public final class RuleRedactor implements StringRedactor {
 		 * Adds a rule replacing strings matching the pattern.
 		 *
 		 * @throws IllegalArgumentException
-		 *             if the pattern has a {@code *} other than first or last, or the replacement has
-		 *             more {@code *} than the pattern allows
+		 *             if the pattern has a {@code *} other than first or last, or the replacement
+		 *             has more {@code *} than the pattern allows
 		 */
 		public Builder replace(String pattern, String replacement) {
 			rules.add(new GlobRule(pattern, replacement));
@@ -158,8 +177,8 @@ public final class RuleRedactor implements StringRedactor {
 		}
 
 		/**
-		 * Adds a rule replacing every thread name with {@code Thread-} and the first 8 hex digits of
-		 * the SHA-256 of the name. The same name always gets the same replacement, also across
+		 * Adds a rule replacing every thread name with {@code Thread-} and the first 8 hex digits
+		 * of the SHA-256 of the name. The same name always gets the same replacement, also across
 		 * recordings. Note that names that can be guessed can be found by hashing guesses, which
 		 * {@link #hashThreadNames(byte[])} prevents.
 		 */
@@ -169,8 +188,8 @@ public final class RuleRedactor implements StringRedactor {
 		}
 
 		/**
-		 * Like {@link #hashThreadNames()}, but uses HMAC-SHA256 with a secret key, so that names cannot
-		 * be found by hashing guesses without the key.
+		 * Like {@link #hashThreadNames()}, but uses HMAC-SHA256 with a secret key, so that names
+		 * cannot be found by hashing guesses without the key.
 		 */
 		public Builder hashThreadNames(byte[] key) {
 			byte[] keyCopy = key.clone();
@@ -180,13 +199,13 @@ public final class RuleRedactor implements StringRedactor {
 
 		/**
 		 * Adds a rule replacing the part of class names matching a regular expression with a base64
-		 * hash of that part. The expression is matched against the class name in source form, such as
-		 * {@code com.acme.secret.Foo}, and the part replaced is the first capture group if the
+		 * hash of that part. The expression is matched against the class name in source form, such
+		 * as {@code com.acme.secret.Foo}, and the part replaced is the first capture group if the
 		 * expression has one, or else the whole match. For example, {@code com\.acme\.(.*)} turns
-		 * {@code com.acme.secret.Foo} into {@code com.acme.<hash>}. The class name is replaced wherever
-		 * it occurs: in internal form ({@code com/acme/secret/Foo}), in method descriptors and in thread
-		 * dumps. The same text always gets the same hash. Package names are not class names, so they
-		 * are not affected.
+		 * {@code com.acme.secret.Foo} into {@code com.acme.<hash>}. The class name is replaced
+		 * wherever it occurs: in internal form ({@code com/acme/secret/Foo}), in method descriptors
+		 * and in thread dumps. The same text always gets the same hash. Package names are not class
+		 * names, so they are not affected.
 		 */
 		public Builder hashClassNames(String regex) {
 			rules.add(new ClassNameRule(Pattern.compile(regex), text -> base64(digest("SHA-256", null, text))));
@@ -194,23 +213,23 @@ public final class RuleRedactor implements StringRedactor {
 		}
 
 		/**
-		 * Like {@link #hashClassNames(String)}, but uses HMAC-SHA256 with a secret key, so that names
-		 * cannot be found by hashing guesses without the key.
+		 * Like {@link #hashClassNames(String)}, but uses HMAC-SHA256 with a secret key, so that
+		 * names cannot be found by hashing guesses without the key.
 		 */
 		public Builder hashClassNames(String regex, byte[] key) {
 			byte[] keyCopy = key.clone();
-			rules.add(new ClassNameRule(Pattern.compile(regex),
-					text -> base64(digest("HmacSHA256", keyCopy, text))));
+			rules.add(new ClassNameRule(Pattern.compile(regex), text -> base64(digest("HmacSHA256", keyCopy, text))));
 			return this;
 		}
 
 		/**
-		 * Adds a rule replacing the part of method names matching a regular expression with a base64
-		 * hash of that part, the first capture group if the expression has one, or else the whole
-		 * match. Method names are replaced as constants and in the stack traces of thread dumps. Since a
-		 * decision applies to every occurrence of a string, a method name is replaced in all classes
-		 * declaring a method with that name. The expression is searched for, so {@code (processRecord)}
-		 * also replaces the name inside {@code lambda$processRecord$0}.
+		 * Adds a rule replacing the part of method names matching a regular expression with a
+		 * base64 hash of that part, the first capture group if the expression has one, or else the
+		 * whole match. Method names are replaced as constants and in the stack traces of thread
+		 * dumps. Since a decision applies to every occurrence of a string, a method name is
+		 * replaced in all classes declaring a method with that name. The expression is searched
+		 * for, so {@code (processRecord)} also replaces the name inside
+		 * {@code lambda$processRecord$0}.
 		 */
 		public Builder hashMethodNames(String regex) {
 			rules.add(new MethodNameRule(Pattern.compile(regex), text -> base64(digest("SHA-256", null, text))));
@@ -222,8 +241,7 @@ public final class RuleRedactor implements StringRedactor {
 		 */
 		public Builder hashMethodNames(String regex, byte[] key) {
 			byte[] keyCopy = key.clone();
-			rules.add(new MethodNameRule(Pattern.compile(regex),
-					text -> base64(digest("HmacSHA256", keyCopy, text))));
+			rules.add(new MethodNameRule(Pattern.compile(regex), text -> base64(digest("HmacSHA256", keyCopy, text))));
 			return this;
 		}
 
@@ -299,8 +317,8 @@ public final class RuleRedactor implements StringRedactor {
 	 * {@code _} if it would start with a digit
 	 */
 	private static String base64(byte[] hash) {
-		String encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(Arrays.copyOf(hash, 9))
-				.replace('-', '$');
+		String encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(Arrays.copyOf(hash, 9)).replace('-',
+				'$');
 		return Character.isDigit(encoded.charAt(0)) ? '_' + encoded : encoded;
 	}
 
@@ -325,9 +343,8 @@ public final class RuleRedactor implements StringRedactor {
 			anyStart = patternParts.size() > 1 && patternParts.get(0).isEmpty();
 			anyEnd = patternParts.size() > 1 && patternParts.get(patternParts.size() - 1).isEmpty()
 					&& !(patternParts.size() == 2 && anyStart);
-			text = patternParts.size() == 1 ? patternParts.get(0)
-					: patternParts.size() == 3 ? patternParts.get(1)
-							: anyStart ? patternParts.get(1) : patternParts.get(0);
+			text = patternParts.size() == 1 ? patternParts.get(0) : patternParts.size() == 3 ? patternParts.get(1)
+					: anyStart ? patternParts.get(1) : patternParts.get(0);
 			parts = splitAtStars(replacement).toArray(new String[0]);
 			int stars = parts.length - 1;
 			boolean valid;
@@ -466,8 +483,8 @@ public final class RuleRedactor implements StringRedactor {
 	}
 
 	/**
-	 * A stack frame in a thread dump, {@code at java.util.List.of(java.base@25/List.java:1)}: the class,
-	 * the method and the location, which is a file name and line, {@code Native Method} or
+	 * A stack frame in a thread dump, {@code at java.util.List.of(java.base@25/List.java:1)}: the
+	 * class, the method and the location, which is a file name and line, {@code Native Method} or
 	 * {@code Unknown Source}, possibly prefixed by a module
 	 */
 	private static final Pattern DUMP_FRAME = Pattern
@@ -569,8 +586,8 @@ public final class RuleRedactor implements StringRedactor {
 		}
 
 		/**
-		 * Renames the classes of the frames, and hashes the source file names of renamed classes, as
-		 * they would reveal the class names
+		 * Renames the classes of the frames, and hashes the source file names of renamed classes,
+		 * as they would reveal the class names
 		 */
 		private String rewriteFrames(String text) {
 			Matcher m = DUMP_FRAME.matcher(text);
@@ -693,7 +710,9 @@ public final class RuleRedactor implements StringRedactor {
 			return null;
 		}
 
-		/** Renames the dotted class names in the text, such as in {@code at java.util.List.of(...)} */
+		/**
+		 * Renames the dotted class names in the text, such as in {@code at java.util.List.of(...)}
+		 */
 		@Override
 		public String rewriteComposite(String dump, StringLocation location) {
 			StringBuilder result = null;
@@ -718,8 +737,8 @@ public final class RuleRedactor implements StringRedactor {
 		}
 
 		/**
-		 * Renames the class names in a method descriptor ({@code (ILjava/util/List;)V}), field descriptor
-		 * ({@code Ljava/util/List;}) or array class name ({@code [Ljava/util/List;}).
+		 * Renames the class names in a method descriptor ({@code (ILjava/util/List;)V}), field
+		 * descriptor ({@code Ljava/util/List;}) or array class name ({@code [Ljava/util/List;}).
 		 */
 		private String renameInDescriptor(String descriptor) {
 			StringBuilder result = null;
@@ -744,7 +763,10 @@ public final class RuleRedactor implements StringRedactor {
 			return result == null ? null : result.append(descriptor, copied, descriptor.length()).toString();
 		}
 
-		/** True if {@code value[start, end)} is the package or starts with it followed by the separator */
+		/**
+		 * True if {@code value[start, end)} is the package or starts with it followed by the
+		 * separator
+		 */
 		private static boolean startsWithPackage(String value, int start, int end, String name, char separator) {
 			int nameEnd = start + name.length();
 			return nameEnd <= end && value.startsWith(name, start)
