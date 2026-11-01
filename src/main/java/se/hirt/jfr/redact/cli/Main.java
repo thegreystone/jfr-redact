@@ -81,10 +81,13 @@ public final class Main {
 			a new recording. Rules are tried in the order given, with --match last.
 
 			Options:
-			  --hash-thread-names   Replace thread names with Thread-<hash of the name>
+			  --hash-thread-names   Replace thread names with Thread-<hash of the name> and thread group
+			                        names with ThreadGroup-<hash of the name>
 			  --hash-class-names <regex>
 			                        Replace the part of class names matching the expression (the first
-			                        group, if any) with a hash, as in 'com\\.acme\\.(.*)'. Can be repeated
+			                        group, if any) with a hash, as in 'com\\.acme\\.(.*)': as constants,
+			                        in descriptors, thread dumps and old-object descriptions. Can be
+			                        repeated
 			  --hash-method-names <regex>
 			                        Same for method names. Can be repeated
 			  --rename-package <package> <new name>

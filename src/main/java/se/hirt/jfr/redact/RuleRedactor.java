@@ -51,7 +51,8 @@ import se.hirt.jfr.redact.internal.Utf8;
  * A {@link StringRedactor} applying simple rules, without regular expressions. Rules are tried in
  * order, and the first matching rule decides. The kinds of rules are:
  * <ul>
- * <li>{@link Builder#hashThreadNames()} replaces thread names with {@code Thread-<hash>}.</li>
+ * <li>{@link Builder#hashThreadNames()} replaces thread names with {@code Thread-<hash>} and thread
+ * group names with {@code ThreadGroup-<hash>}.</li>
  * <li>{@link Builder#hashClassNames(String)} replaces the part of class names matching a regular
  * expression with a hash.</li>
  * <li>{@link Builder#hashMethodNames(String)} does the same for method names.</li>
@@ -109,11 +110,14 @@ import se.hirt.jfr.redact.internal.Utf8;
  * }</pre>
  *
  * Some strings are documents embedding other strings, see {@link StringLocation#isComposite()}.
- * Rules process these strings in order. Specialized rules rewrite their embedded values: thread
- * names are hashed the same way as elsewhere, in the headers and lock owners of thread dumps and in
- * the {@code Thread Name:} of old object descriptions, and packages are renamed in class names.
- * Glob and location-based rules match the whole current text, including preceding rewrites, and the
- * first matching whole-string rule decides. Location predicates see all locations of the value.
+ * Rules process these strings in order. Specialized rules rewrite their embedded values the same
+ * way as elsewhere: thread names in the headers and lock owners of thread dumps and in the
+ * {@code Thread Name:} of old object descriptions, thread group names in their
+ * {@code Thread Group:}, class names in the frames and lock objects of thread dumps and in the
+ * {@code Class Name:} of old object descriptions, method names in the frames, and packages in class
+ * names. Glob and location-based rules match the whole current text, including preceding rewrites,
+ * and the first matching whole-string rule decides. Location predicates see all locations of the
+ * value.
  * <p>
  * Since a decision applies to every occurrence of a string, a rule matching a string at one
  * location replaces it everywhere. For example, hashing the thread name {@code main} also renames
@@ -184,12 +188,17 @@ public final class RuleRedactor implements StringRedactor {
 
 		/**
 		 * Adds a rule replacing every thread name with {@code Thread-} and the first 8 hex digits
-		 * of the SHA-256 of the name. The same name always gets the same replacement, also across
-		 * recordings. Note that names that can be guessed can be found by hashing guesses, which
-		 * {@link #hashThreadNames(byte[])} prevents.
+		 * of the SHA-256 of the name, and every thread group name with {@code ThreadGroup-} and the
+		 * same hash of the group name, since group names often mirror the thread names they
+		 * contain. A name that is both a thread and a thread group name is replaced as a thread
+		 * name. The groups the JVM creates itself, {@code system} and {@code main}, name nothing of
+		 * the application and are left alone unless they are also thread names. The empty name of
+		 * an unnamed virtual thread is not a thread name and is left to later rules. The same name
+		 * always gets the same replacement, also across recordings. Note that names that can be
+		 * guessed can be found by hashing guesses, which {@link #hashThreadNames(byte[])} prevents.
 		 */
 		public Builder hashThreadNames() {
-			rules.add(new ThreadNameRule(name -> "Thread-" + hex(digest("SHA-256", null, name))));
+			rules.add(new ThreadNameRule(name -> hex(digest("SHA-256", null, name))));
 			return this;
 		}
 
@@ -199,7 +208,7 @@ public final class RuleRedactor implements StringRedactor {
 		 */
 		public Builder hashThreadNames(byte[] key) {
 			byte[] keyCopy = key.clone();
-			rules.add(new ThreadNameRule(name -> "Thread-" + hex(digest("HmacSHA256", keyCopy, name))));
+			rules.add(new ThreadNameRule(name -> hex(digest("HmacSHA256", keyCopy, name))));
 			return this;
 		}
 
@@ -210,10 +219,15 @@ public final class RuleRedactor implements StringRedactor {
 		 * expression has one, or else the whole match. For example, {@code com\.acme\.(.*)} turns
 		 * {@code com.acme.secret.Foo} into {@code com.acme.<hash>}. The class name is replaced
 		 * wherever it occurs: in internal form ({@code com/acme/secret/Foo}), in array class names
-		 * ({@code [Lcom/acme/secret/Foo;}), in method descriptors and in thread dumps. Array
-		 * prefixes and descriptor delimiters are preserved; primitive arrays are unchanged. The
-		 * same text always gets the same hash. Package names are not class names, so they are not
-		 * affected.
+		 * ({@code [Lcom/acme/secret/Foo;}), in method descriptors, in the frames and lock objects
+		 * of thread dumps and in the {@code Class Name:} of old object descriptions. Array prefixes
+		 * and descriptor delimiters are preserved, and primitive arrays are unchanged. A hidden
+		 * class, such as {@code com.acme.Foo$$Lambda/0x00007fb87c2252f8}, is matched by its host
+		 * class, {@code com.acme.Foo$$Lambda}, and the address or identity hash the JVM appends in
+		 * each run is kept, so that the class gets the same hash in every form, and from JDK 21 on
+		 * in every run, while JDK 8 to 20 number their lambda proxy classes per run, as in
+		 * {@code Foo$$Lambda$269} and {@code Foo$$Lambda$14}. The same text always gets the same
+		 * hash. Package names are not class names, so they are not affected.
 		 */
 		public Builder hashClassNames(String regex) {
 			rules.add(new ClassNameRule(Pattern.compile(regex), text -> base64(digest("SHA-256", null, text))));
@@ -426,37 +440,69 @@ public final class RuleRedactor implements StringRedactor {
 		}
 	}
 
-	/** Replaces thread names, also in the headers and lock owners of thread dumps */
+	/**
+	 * Replaces thread names, also in the headers and lock owners of thread dumps and in old object
+	 * descriptions, and thread group names
+	 */
 	private static final class ThreadNameRule implements Rule {
 		/** Markers ending the quoted name in a thread dump header, such as "main" #1 prio=5 */
 		private static final String[] HEADER_NAME_ENDS = {"\" #", "\" daemon", "\" prio=", "\" os_prio=", "\" cpu=",
 				"\":"};
+		private static final String OLD_OBJECT_THREAD_NAME = "Thread Name: ";
+		private static final String OLD_OBJECT_THREAD_GROUP = "Thread Group: ";
+		/** The thread groups the JVM creates itself, which name nothing of the application */
+		private static final Set<String> JVM_THREAD_GROUPS = Set.of("system", "main");
 
-		private final UnaryOperator<String> replacement;
+		private final UnaryOperator<String> hash;
 
-		ThreadNameRule(UnaryOperator<String> replacement) {
-			this.replacement = replacement;
+		ThreadNameRule(UnaryOperator<String> hash) {
+			this.hash = hash;
+		}
+
+		private String replaceThreadName(String name) {
+			return "Thread-" + hash.apply(name);
+		}
+
+		private String replaceGroupName(String name) {
+			return "ThreadGroup-" + hash.apply(name);
 		}
 
 		@Override
 		public String apply(String value, List<StringLocation> locations) {
+			if (value.isEmpty()) {
+				return null; // The empty name of an unnamed virtual thread is no name
+			}
+			boolean group = false;
 			for (StringLocation location : locations) {
 				if (location.isThreadName()) {
-					return replacement.apply(value);
+					return replaceThreadName(value);
 				}
+				group |= location.isThreadGroupName();
 			}
-			return null;
+			return group && !JVM_THREAD_GROUPS.contains(value) ? replaceGroupName(value) : null;
 		}
-
-		private static final String OLD_OBJECT_THREAD_NAME = "Thread Name: ";
 
 		@Override
 		public String rewriteComposite(String text, StringLocation location) {
 			if (location.isThreadDump()) {
 				return rewriteThreadDump(text);
 			}
-			if (text.startsWith(OLD_OBJECT_THREAD_NAME)) {
-				return OLD_OBJECT_THREAD_NAME + replacement.apply(text.substring(OLD_OBJECT_THREAD_NAME.length()));
+			return rewriteDescription(text);
+		}
+
+		/**
+		 * Replaces the thread or thread group name of an old object description, unless it is empty
+		 * or a thread group of the JVM's own
+		 */
+		private String rewriteDescription(String text) {
+			if (text.startsWith(OLD_OBJECT_THREAD_NAME) && text.length() > OLD_OBJECT_THREAD_NAME.length()) {
+				return OLD_OBJECT_THREAD_NAME + replaceThreadName(text.substring(OLD_OBJECT_THREAD_NAME.length()));
+			}
+			if (text.startsWith(OLD_OBJECT_THREAD_GROUP)) {
+				String name = text.substring(OLD_OBJECT_THREAD_GROUP.length());
+				if (!name.isEmpty() && !JVM_THREAD_GROUPS.contains(name)) {
+					return OLD_OBJECT_THREAD_GROUP + replaceGroupName(name);
+				}
 			}
 			return text;
 		}
@@ -481,7 +527,7 @@ public final class RuleRedactor implements StringRedactor {
 			sorted.sort((a, b) -> b.length() - a.length());
 			String result = dump;
 			for (String name : sorted) {
-				result = result.replace('"' + name + '"', '"' + replacement.apply(name) + '"');
+				result = result.replace('"' + name + '"', '"' + replaceThreadName(name) + '"');
 			}
 			return result;
 		}
@@ -499,9 +545,24 @@ public final class RuleRedactor implements StringRedactor {
 	}
 
 	/**
-	 * Java identifier characters, including Unicode letters, currency symbols and combining marks.
+	 * Java identifier characters, including Unicode letters, currency symbols and combining marks
 	 */
-	private static final String DUMP_CLASS_NAME = "\\p{javaJavaIdentifierPart}+(?:\\.\\p{javaJavaIdentifierPart}+)*";
+	private static final String DUMP_IDENTIFIER = "\\p{javaJavaIdentifierPart}+";
+	/**
+	 * The address or identity hash the JVM appends to the name of a hidden class after a slash, as
+	 * in {@code com.acme.Foo$$Lambda/0x00007fb87c2252f8} or, in JDK 8 to 14,
+	 * {@code com.acme.Foo$$Lambda$269/286774984}
+	 */
+	private static final String HIDDEN_CLASS_SLASH_SUFFIX = "/(?:0x[0-9a-fA-F]+|\\d+)";
+	/**
+	 * A class name in a thread dump: identifiers separated by dots, and for a hidden class its
+	 * suffix. A slash is accepted only where it starts a suffix, so the slashed frames of JRockit
+	 * dumps, {@code at com/acme/Foo.run()V(Foo.java:12)}, do not match, as before. Whether a lone
+	 * {@code /<decimal>} segment is a suffix or the class of a one-segment package is decided when
+	 * the name is renamed, see {@code isClassOfSingleSegmentPackage}.
+	 */
+	private static final String DUMP_CLASS_NAME = DUMP_IDENTIFIER + "(?:\\." + DUMP_IDENTIFIER + ")*(?:"
+			+ HIDDEN_CLASS_SLASH_SUFFIX + ")?";
 
 	/**
 	 * A stack frame in a thread dump, {@code at java.util.List.of(java.base@25/List.java:1)}: the
@@ -529,6 +590,17 @@ public final class RuleRedactor implements StringRedactor {
 			return null;
 		}
 		return text.substring(0, m.start(group)) + hash.apply(m.group(group)) + text.substring(m.end(group));
+	}
+
+	/**
+	 * True if a quote precedes the position on its line, which puts it inside a quoted thread name:
+	 * in a header, {@code "worker (a com.acme.Foo)" #12 prio=5}, or in a deadlock's
+	 * {@code which is held by "worker (a com.acme.Foo)"}. Frames and lock lines have no quote
+	 * before the class name. Thread names are rewritten as a whole by {@link ThreadNameRule}. A
+	 * name spanning lines is only protected on its first line.
+	 */
+	private static boolean inQuotedName(String text, int position) {
+		return text.indexOf('"', text.lastIndexOf('\n', position) + 1, position) >= 0;
 	}
 
 	/** Replaces the part of method names matching an expression with a hash */
@@ -560,7 +632,7 @@ public final class RuleRedactor implements StringRedactor {
 			StringBuilder result = null;
 			int copied = 0;
 			while (m.find()) {
-				String renamed = replaceMatch(pattern, hash, m.group(2));
+				String renamed = inQuotedName(text, m.start()) ? null : replaceMatch(pattern, hash, m.group(2));
 				if (renamed != null) {
 					if (result == null) {
 						result = new StringBuilder(text.length() + 64);
@@ -575,8 +647,48 @@ public final class RuleRedactor implements StringRedactor {
 
 	/** Replaces the part of class names matching an expression with a hash */
 	private static final class ClassNameRule implements Rule {
-		/** An object in a thread dump, such as a lock: (a java.util.HashMap) */
-		private static final Pattern OBJECT = Pattern.compile("(\\(a )(" + DUMP_CLASS_NAME + ")(\\))");
+		/**
+		 * The class of an object in a thread dump, which may be an array class, as the group
+		 * following one of the templates HotSpot prints. The name ends at a parenthesis, a comma or
+		 * the end of the line.
+		 */
+		private static final String OBJECT_CLASS_NAME = "(\\[+L" + DUMP_CLASS_NAME + ";|" + DUMP_CLASS_NAME
+				+ ")(?=[),]|$)";
+		/**
+		 * The class of a lock, {@code (a java.util.HashMap)} or {@code (a [Lcom.acme.Foo;)}, or of
+		 * the class a Class mirror stands for, {@code (a java.lang.Class for com.acme.Foo)}. The
+		 * rare templates below have patterns of their own, so that each pattern starts with a
+		 * literal, which keeps the scan of a large dump cheap.
+		 */
+		private static final Pattern LOCK_OBJECT = Pattern
+				.compile("\\(a (?:java\\.lang\\.Class for )?" + OBJECT_CLASS_NAME, Pattern.MULTILINE);
+		/** The object of a deadlock, {@code (object 0x000000076b4d8f88, a com.acme.Foo),} */
+		private static final Pattern DEADLOCK_OBJECT = Pattern
+				.compile("\\(object 0x[0-9a-fA-F]+, a " + OBJECT_CLASS_NAME, Pattern.MULTILINE);
+		/**
+		 * The class being initialized, ending the line
+		 * {@code waiting on the Class initialization monitor for com.acme.Foo}
+		 */
+		private static final Pattern CLASS_INITIALIZATION_MONITOR = Pattern
+				.compile("Class initialization monitor for " + OBJECT_CLASS_NAME, Pattern.MULTILINE);
+		/**
+		 * The suffix the JVM appends to the name of a hidden class in source form, which differs
+		 * between runs. Class name constants carry the identity hash in JDK 8 to 14,
+		 * {@code Foo$$Lambda$269/286774984}, the address and the identity hash in JDK 15 to 22,
+		 * {@code Foo$$Lambda+0x00007fb87c2252f8/262911569}, and the address alone from JDK 23 on,
+		 * {@code Foo$$Lambda/0x00007fb87c2252f8}, which is also what thread dumps print since JDK
+		 * 15, after printing the identity hash before.
+		 */
+		private static final Pattern HIDDEN_CLASS_SUFFIX = Pattern
+				.compile("(?:\\+0x[0-9a-fA-F]+)?(?:" + HIDDEN_CLASS_SLASH_SUFFIX + ")?$");
+		/**
+		 * The suffix of a hidden class in internal form, as in descriptors and array class names,
+		 * {@code com/acme/Foo$$Lambda+0x00007fb87c2252f8}: the address alone. The identity hash is
+		 * only appended to names in source form, so a trailing {@code /<digits>} segment of an
+		 * internal name is a class or package name.
+		 */
+		private static final Pattern INTERNAL_HIDDEN_CLASS_SUFFIX = Pattern.compile("\\+0x[0-9a-fA-F]+$");
+		private static final String OLD_OBJECT_CLASS_NAME = "Class Name: ";
 
 		private final Pattern pattern;
 		private final UnaryOperator<String> hash;
@@ -590,7 +702,7 @@ public final class RuleRedactor implements StringRedactor {
 		public String apply(String value, List<StringLocation> locations) {
 			for (StringLocation location : locations) {
 				if (location.isClassName()) {
-					return value.startsWith("[") ? renameInDescriptor(value) : renameInternal(value);
+					return renameClassName(value);
 				}
 				if (location.isMethodDescriptor()) {
 					return renameInDescriptor(value);
@@ -601,22 +713,26 @@ public final class RuleRedactor implements StringRedactor {
 
 		@Override
 		public String rewriteComposite(String text, StringLocation location) {
-			if (!location.isThreadDump()) {
-				return text;
+			if (location.isThreadDump()) {
+				return rewriteObjects(rewriteFrames(text));
 			}
-			return rewriteObjects(rewriteFrames(text));
+			if (text.startsWith(OLD_OBJECT_CLASS_NAME)) {
+				String renamed = renameClassName(text.substring(OLD_OBJECT_CLASS_NAME.length()));
+				return renamed == null ? text : OLD_OBJECT_CLASS_NAME + renamed;
+			}
+			return text;
 		}
 
 		/**
-		 * Renames the classes of the frames, and hashes the source file names of renamed classes,
-		 * as they would reveal the class names
+		 * Renames the classes of the frames, except within quoted thread names, and hashes the
+		 * source file names of renamed classes, as they would reveal the class names
 		 */
 		private String rewriteFrames(String text) {
 			Matcher m = DUMP_FRAME.matcher(text);
 			StringBuilder result = null;
 			int copied = 0;
 			while (m.find()) {
-				String renamed = renameSource(m.group(1));
+				String renamed = inQuotedName(text, m.start()) ? null : renameClassName(m.group(1));
 				if (renamed == null) {
 					continue;
 				}
@@ -634,34 +750,111 @@ public final class RuleRedactor implements StringRedactor {
 			return result == null ? text : result.append(text, copied, text.length()).toString();
 		}
 
+		/**
+		 * Renames the classes of the objects of every template, except within quoted thread names
+		 */
 		private String rewriteObjects(String text) {
-			Pattern classPattern = OBJECT;
-			Matcher m = classPattern.matcher(text);
+			return rewriteObjects(CLASS_INITIALIZATION_MONITOR,
+					rewriteObjects(DEADLOCK_OBJECT, rewriteObjects(LOCK_OBJECT, text)));
+		}
+
+		private String rewriteObjects(Pattern objects, String text) {
+			Matcher m = objects.matcher(text);
 			StringBuilder result = null;
 			int copied = 0;
 			while (m.find()) {
-				String renamed = renameSource(m.group(2));
+				String renamed = inQuotedName(text, m.start()) ? null : renameClassName(m.group(1));
 				if (renamed != null) {
 					if (result == null) {
 						result = new StringBuilder(text.length() + 64);
 					}
-					result.append(text, copied, m.start(2)).append(renamed);
-					copied = m.end(2);
+					result.append(text, copied, m.start(1)).append(renamed);
+					copied = m.end(1);
 				}
 			}
 			return result == null ? text : result.append(text, copied, text.length()).toString();
 		}
 
-		/** @return the renamed source form name, or {@code null} if it does not match */
-		private String renameSource(String name) {
-			return replaceMatch(pattern, hash, name);
+		/**
+		 * Renames a class name in any of its forms: in source form ({@code com.acme.Foo}) or
+		 * internal form ({@code com/acme/Foo}), with the suffix of a hidden class, or an array
+		 * class in either form ({@code [Lcom.acme.Foo;}), whose component class is renamed.
+		 * Primitive arrays never match; the pattern decides for the names of primitive types, such
+		 * as the class name constant {@code int}.
+		 *
+		 * @return the renamed name, or {@code null} if the pattern does not match
+		 */
+		private String renameClassName(String name) {
+			if (!name.startsWith("[")) {
+				return renameClass(name, false);
+			}
+			int component = name.lastIndexOf('[') + 1;
+			if (component >= name.length() || name.charAt(component) != 'L' || !name.endsWith(";")) {
+				return null;
+			}
+			String renamed = renameClass(name.substring(component + 1, name.length() - 1), false);
+			return renamed == null ? null : name.substring(0, component + 1) + renamed + ";";
 		}
 
-		private String renameInternal(String internalName) {
-			String renamed = renameSource(internalName.replace('/', '.'));
-			return renamed == null ? null : renamed.replace('.', '/');
+		/**
+		 * Renames a class that is not an array: splits off the suffix of a hidden class, matches
+		 * the pattern against the source form of the host class, and keeps the form of the input,
+		 * so that slashed names stay slashed and dotted names dotted.
+		 *
+		 * @param internal
+		 *            {@code true} if the name is known to be in internal form, as in a descriptor,
+		 *            or {@code false} to decide by the name: a name without dots is in internal
+		 *            form if a slash precedes its suffix, or if its only slash starts a suffix that
+		 *            is more likely a class name, see {@link #isClassOfSingleSegmentPackage}. A
+		 *            dotted name may end in a slash segment that is no suffix, and a name in the
+		 *            default package has no separator to decide by, which the suffix grammar does.
+		 * @return the renamed name, or {@code null} if the pattern does not match
+		 */
+		private String renameClass(String name, boolean internal) {
+			int hostEnd = name.length();
+			if (!internal) {
+				// Only a name with a slash or a plus can carry a suffix, which spares most frames the pattern
+				if (name.indexOf('/') >= 0 || name.indexOf('+') >= 0) {
+					hostEnd = suffixStart(HIDDEN_CLASS_SUFFIX, name);
+				}
+				internal = name.indexOf('.') < 0
+						&& (name.lastIndexOf('/', hostEnd - 1) >= 0 || isClassOfSingleSegmentPackage(name, hostEnd));
+			}
+			if (internal) {
+				hostEnd = suffixStart(INTERNAL_HIDDEN_CLASS_SUFFIX, name);
+			}
+			String host = name.substring(0, hostEnd);
+			String renamed = replaceMatch(pattern, hash, internal ? host.replace('/', '.') : host);
+			if (renamed == null) {
+				return null;
+			}
+			return (internal ? renamed.replace('.', '/') : renamed) + name.substring(hostEnd);
 		}
 
+		/**
+		 * True if the slash segment starting at {@code suffixStart}, which the suffix grammar
+		 * accepts, is more likely the class of a single-segment package than the suffix of a hidden
+		 * class in the default package: a decimal segment after a host without a {@code $}, as in
+		 * {@code acme/123}. JDK 8 to 14 appended the identity hash to generated hosts with one, as
+		 * in {@code Gen$$Lambda$5/286774984}, and an address, as in {@code Gen/0x000000002e045c38},
+		 * has named a hidden class of any host since JDK 15, while no Java class is named like one.
+		 */
+		private static boolean isClassOfSingleSegmentPackage(String name, int suffixStart) {
+			return suffixStart < name.length() && name.charAt(suffixStart) == '/'
+					&& !name.startsWith("/0x", suffixStart) && name.lastIndexOf('$', suffixStart) < 0;
+		}
+
+		/**
+		 * @return where the suffix matching the pattern starts, or the length of the name if it has
+		 *         none, which cannot happen with {@link #HIDDEN_CLASS_SUFFIX}, whose parts are all
+		 *         optional
+		 */
+		private static int suffixStart(Pattern suffix, String name) {
+			Matcher m = suffix.matcher(name);
+			return m.find() ? m.start() : name.length();
+		}
+
+		/** Renames the classes of a method descriptor, such as {@code (ILcom/acme/Foo;)V} */
 		private String renameInDescriptor(String descriptor) {
 			StringBuilder result = null;
 			int copied = 0;
@@ -673,7 +866,7 @@ public final class RuleRedactor implements StringRedactor {
 				if (end < 0) {
 					break;
 				}
-				String renamed = renameInternal(descriptor.substring(i + 1, end));
+				String renamed = renameClass(descriptor.substring(i + 1, end), true);
 				if (renamed != null) {
 					if (result == null) {
 						result = new StringBuilder(descriptor.length() + 16);

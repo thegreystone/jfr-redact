@@ -69,6 +69,24 @@ Glob replacements (`--replace`) also apply to whole thread dumps and old-object 
 rewrite embedded names in rule order; the first matching whole-string rule replaces the current value and stops
 further processing. The same behavior applies to `RuleRedactor.Builder.replaceIf`.
 
+`--hash-thread-names` replaces thread names with `Thread-<hash>`, as constants, in the headers and lock owners of
+thread dumps and in the `Thread Name:` of old-object descriptions, and thread group names with `ThreadGroup-<hash>`,
+as constants and in the `Thread Group:` of old-object descriptions, since group names such as
+`Thread Group for Queue: 'weblogic.socket.Muxer'` mirror the thread names being hidden. A name that is both is
+replaced as a thread name. The groups the JVM creates itself, `system` and `main`, name nothing of the application
+and are left alone unless they are also thread names. The empty name of an unnamed virtual thread is not a thread
+name and is left to later rules. Names stored through the `java.lang.String` constant pool, as JDK Mission Control's
+`flightrecorder.writer` does, are recognized by the thread or thread group field referring to them.
+
+`--hash-class-names` replaces class names as constants, in array class names and method descriptors, in the frames
+and lock objects of thread dumps (`(a X)`, `(object ..., a X)`, `(a java.lang.Class for X)` and
+`Class initialization monitor for X`) and in the `Class Name:` of old-object descriptions. Primitive arrays are
+unchanged. A hidden class such as `com.acme.Foo$$Lambda/0x00007fb87c2252f8` is hashed by its host class,
+`com.acme.Foo$$Lambda`, and keeps the address or identity hash the JVM appends in each run, so its frames and its
+class constant get the same hash, and from JDK 21 on the same hash in every run (JDK 8 to 20 number their lambda
+proxy classes per run, as in `Foo$$Lambda$269` and `Foo$$Lambda$14`). Package names are not class names and are not
+affected. `--hash-method-names` also rewrites the frames of thread dumps.
+
 Strings are decoded according to their recording encoding, preserving UTF-16 code units, including unpaired
 surrogates in char-array values. Replacements containing unpaired surrogates use JFR's char-array encoding where
 available. Fixed UTF-8 fields in JFR 0.9 reject replacements they cannot represent. TSV output escapes unpaired
@@ -82,18 +100,20 @@ jfr-redact redact --match <regex> [--match <regex>]... [--replacement <text>] <r
 
 ## Test recordings
 
-`src/test/resources/recordings` has one recording per supported JFR version, used by the tests and examples:
+`src/test/resources/recordings` has one recording per supported JFR version, and one from a writer other than
+HotSpot, used by the tests and examples:
 
 | Recording | JFR | Content |
 |-----------|-----|---------|
 | `jrockit-r28-transitions.jfr` | 0.9 | JRockit R28 test application, with environment variables and system properties |
 | `jdk9-basic.jfr` | 1.0 | JDK 9 running JConsole, with RMI connection threads |
 | `jdk9-weblogic-medrec.jfr` | 1.0 | WebLogic running the MedRec patient records demo, with SQL, servlet and EJB events |
-| `jdk21-jmc.jfr` | 2.1 | JDK 21 running JDK Mission Control, with thread dumps |
+| `jdk21-jmc.jfr` | 2.1 | JDK 21 running JDK Mission Control, with thread dumps containing hidden-class frames |
+| `jmc-writer-pooled.jfr` | 2.0 | Written by JMC's pure-Java `flightrecorder.writer`, storing thread, class and thread group names through the `java.lang.String` constant pool |
 
-They come from the JDK Mission Control test resources, see [NOTICE](NOTICE). Personal data in two of them was
-replaced with jfr-redact itself, using the `ScrubPersonalData` example. `RedactPatientData` shows a redaction of the
-MedRec recording:
+The first four come from the JDK Mission Control test resources, see [NOTICE](NOTICE). Personal data in two of them
+was replaced with jfr-redact itself, using the `ScrubPersonalData` example. The last one was generated for jfr-redact
+with the writer library of the same project. `RedactPatientData` shows a redaction of the MedRec recording:
 
 ```java
 StringRedactor redactor = RuleRedactor.builder()

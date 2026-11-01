@@ -56,6 +56,16 @@ import se.hirt.jfr.redact.scan.StringScanner;
 import se.hirt.jfr.redact.parser.StreamingChunkParser;
 
 class RuleRedactorTest {
+	private static final StringLocation CLASS_NAME = new StringLocation("jdk.types.Symbol", "string", true,
+			List.of("java.lang.Class.name"));
+	private static final StringLocation METHOD_NAME = new StringLocation("jdk.types.Symbol", "string", true,
+			List.of("jdk.types.Method.name"));
+	private static final StringLocation DESCRIPTOR = new StringLocation("jdk.types.Symbol", "string", true,
+			List.of("jdk.types.Method.descriptor"));
+	private static final StringLocation THREAD_NAME = new StringLocation("java.lang.Thread", "javaName", true,
+			List.of());
+	private static final StringLocation THREAD_DUMP = new StringLocation("jdk.ThreadDump", "result", false, List.of());
+
 	@Test
 	void matching() {
 		RuleRedactor redactor = RuleRedactor.builder().replace("exact", "E").replace("java.util.*", "utilz.*")
@@ -222,11 +232,12 @@ class RuleRedactorTest {
 	Path dir) throws Exception {
 		Path input = Path.of(RuleRedactorTest.class.getResource("/recordings/jdk21-jmc.jfr").toURI());
 		Path output = dir.resolve("redacted.jfr");
-		List<String> before = threadDumps(input);
+		List<String> before = TestRecordings.threadDumps(input);
 		assertEquals(2, before.size(), "the bundled fixture must exercise both thread dumps");
 		assertTrue(before.stream().allMatch(text -> text.contains("Full thread dump")));
 		JfrRedactor.redact(input, output, RuleRedactor.builder().replace("*", "X").build());
-		assertEquals(List.of("X", "X"), threadDumps(output), "the JDK reader must see only the replacements");
+		assertEquals(List.of("X", "X"), TestRecordings.threadDumps(output),
+				"the JDK reader must see only the replacements");
 	}
 
 	private static List<StringLocation> compositeLocations() {
@@ -239,19 +250,6 @@ class RuleRedactorTest {
 	private static String compositeText(StringLocation location) {
 		return location.isThreadDump() ? "\"secret\" #1 prio=5\n\tat java.util.ArrayList.run(ArrayList.java:1)\n"
 				: "Thread Name: secret";
-	}
-
-	private static List<String> threadDumps(Path file) throws Exception {
-		List<String> dumps = new ArrayList<>();
-		try (RecordingFile recording = new RecordingFile(file)) {
-			while (recording.hasMoreEvents()) {
-				RecordedEvent event = recording.readEvent();
-				if (event.getEventType().getName().equals("jdk.ThreadDump")) {
-					dumps.add(event.getString("result"));
-				}
-			}
-		}
-		return dumps;
 	}
 
 	@Test
@@ -615,7 +613,7 @@ class RuleRedactorTest {
 		}
 		String originalClass = 秘密.class.getName();
 		String originalMethod = "待機";
-		List<String> inputDumps = threadDumps(input);
+		List<String> inputDumps = TestRecordings.threadDumps(input);
 		assertTrue(inputDumps.stream().anyMatch(text -> text.contains(originalClass + "." + originalMethod + "(")),
 				"the input must genuinely contain the Unicode frame");
 		RuleRedactor redactor = RuleRedactor.builder().hashClassNames(Pattern.quote(originalClass))
@@ -756,6 +754,400 @@ class RuleRedactorTest {
 		assertTrue(found, "frames of the test class, with hashed names");
 		String raw = new String(java.nio.file.Files.readAllBytes(output), java.nio.charset.StandardCharsets.ISO_8859_1);
 		assertTrue(!raw.contains("RuleRedactorTest"));
+	}
+
+	@Test
+	void hashesHiddenClassesByTheirHostClassKeepingThePerRunSuffix() {
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("(?:com\\.acme|java\\.lang\\.invoke)\\.(.*)")
+				.hashMethodNames("^(run)$").build();
+		String host = hashedSource(redactor, "com.acme.Host");
+		String lambda = hashedSource(redactor, "com.acme.Host$$Lambda");
+		String lambda14 = hashedSource(redactor, "com.acme.Host$$Lambda$14");
+		String lambda269 = hashedSource(redactor, "com.acme.Host$$Lambda$269");
+		String form = hashedSource(redactor, "java.lang.invoke.LambdaForm$MH");
+		String run = redactor.redact("run", List.of(METHOD_NAME));
+		assertTrue(!lambda.contains("Lambda") && !lambda.equals(lambda14) && !run.equals("run"), lambda + " " + run);
+		// JDK 8 to 20 number lambda proxy classes per run, and the counter is part of the hashed host
+		assertTrue(!lambda14.equals(hashedSource(redactor, "com.acme.Host$$Lambda$15")),
+				"the hash follows the counter");
+
+		// Constants of every JDK generation: the host is hashed, the suffix and the separators are kept
+		assertEquals(lambda269 + "/286774984",
+				redactor.redact("com.acme.Host$$Lambda$269/286774984", List.of(CLASS_NAME)), "JDK 8-14");
+		assertEquals(lambda14 + "+0x0000000800c02a00/1052195003",
+				redactor.redact("com.acme.Host$$Lambda$14+0x0000000800c02a00/1052195003", List.of(CLASS_NAME)),
+				"JDK 15-20");
+		assertEquals(lambda + "+0x00007fb87c2252f8/262911569",
+				redactor.redact("com.acme.Host$$Lambda+0x00007fb87c2252f8/262911569", List.of(CLASS_NAME)),
+				"JDK 21-22");
+		assertEquals(lambda + "/0x000000002e045c38",
+				redactor.redact("com.acme.Host$$Lambda/0x000000002e045c38", List.of(CLASS_NAME)), "JDK 23+");
+		assertEquals(lambda + "/0x000000002f0a0000",
+				redactor.redact("com.acme.Host$$Lambda/0x000000002f0a0000", List.of(CLASS_NAME)), "another run");
+		assertEquals(host.replace('.', '/'), redactor.redact("com/acme/Host", List.of(CLASS_NAME)));
+		String internal = lambda.replace('.', '/');
+		assertEquals("[L" + internal + "+0x00007fb87c2252f8;",
+				redactor.redact("[Lcom/acme/Host$$Lambda+0x00007fb87c2252f8;", List.of(CLASS_NAME)));
+		assertEquals("(L" + internal + "+0x00007fb87c2252f8;)L" + internal + ";", redactor
+				.redact("(Lcom/acme/Host$$Lambda+0x00007fb87c2252f8;)Lcom/acme/Host$$Lambda;", List.of(DESCRIPTOR)));
+		assertEquals("([[L" + internal + "+0x00007fb87c2252f8;I)V",
+				redactor.redact("([[Lcom/acme/Host$$Lambda+0x00007fb87c2252f8;I)V", List.of(DESCRIPTOR)));
+		// In internal form only the address is a suffix, so a last segment of digits is a class name
+		String digits = redactor.redact("com/acme/123", List.of(CLASS_NAME));
+		assertTrue(digits.matches("com/acme/[A-Za-z0-9_$]{12,13}"), digits);
+		assertEquals("(L" + digits + ";)V", redactor.redact("(Lcom/acme/123;)V", List.of(DESCRIPTOR)));
+		String hex = redactor.redact("com/acme/0x1F", List.of(CLASS_NAME));
+		assertTrue(hex.matches("com/acme/[A-Za-z0-9_$]{12,13}"), hex);
+		// A dotted name may end in a slash segment that is no suffix, and stays dotted
+		String fooXyz = redactor.redact("com.acme.Foo/xyz", List.of(CLASS_NAME));
+		assertTrue(fooXyz.matches("com\\.acme\\.[A-Za-z0-9_$]{12,13}"), fooXyz);
+		RuleRedactor everything = RuleRedactor.builder().hashClassNames("(.*)").build();
+		assertEquals(everything.redact("Gen$$Lambda", List.of(CLASS_NAME)) + "/0x000000002e045c38",
+				everything.redact("Gen$$Lambda/0x000000002e045c38", List.of(CLASS_NAME)), "default package");
+		assertEquals(everything.redact("Gen$$Lambda$5", List.of(CLASS_NAME)) + "/286774984",
+				everything.redact("Gen$$Lambda$5/286774984", List.of(CLASS_NAME)), "default package, JDK 8-14");
+		// A hidden class defined in the default package without a $ in its name, as by
+		// Lookup.defineHiddenClass, keeps its address too, so its hash is the same in every run
+		String hidden = everything.redact("GenHidden", List.of(CLASS_NAME));
+		assertEquals(hidden + "/0x000000002e045c38",
+				everything.redact("GenHidden/0x000000002e045c38", List.of(CLASS_NAME)), "default package, no $");
+		assertEquals(hidden + "/0x000000002e0a0000",
+				everything.redact("GenHidden/0x000000002e0a0000", List.of(CLASS_NAME)), "another run");
+		assertEquals("[L" + hidden + "/0x000000002e045c38;",
+				everything.redact("[LGenHidden/0x000000002e045c38;", List.of(CLASS_NAME)));
+		// The only slash of a class in a single-segment package is no suffix when it starts a decimal
+		// segment after a host without a $, unlike the identity hash of a JDK 8 to 14 class in the
+		// default package, while an address names a hidden class whatever the host
+		RuleRedactor acme = RuleRedactor.builder().hashClassNames("acme\\.(.*)").build();
+		String digitsClass = acme.redact("acme/123", List.of(CLASS_NAME));
+		assertTrue(digitsClass.matches("acme/[A-Za-z0-9_$]{12,13}"), digitsClass);
+		assertEquals("[L" + digitsClass + ";", acme.redact("[Lacme/123;", List.of(CLASS_NAME)));
+		assertEquals("(L" + digitsClass + ";)V", acme.redact("(Lacme/123;)V", List.of(DESCRIPTOR)));
+		assertTrue(everything.redact("acme/123", List.of(CLASS_NAME)).matches("[A-Za-z0-9_$]{12,13}"));
+		assertEquals("acme/0x1F", acme.redact("acme/0x1F", List.of(CLASS_NAME)), "the hidden class acme, unmatched");
+		assertEquals(everything.redact("acme", List.of(CLASS_NAME)) + "/0x1F",
+				everything.redact("acme/0x1F", List.of(CLASS_NAME)));
+		// In a descriptor, where a hidden class carries its address after a plus, the segment is a class
+		String hexClass = acme.redact("(Lacme/0x1F;)V", List.of(DESCRIPTOR));
+		assertTrue(hexClass.matches("\\(Lacme/[A-Za-z0-9_$]{12,13};\\)V"), hexClass);
+		// The pattern decides for the names of primitive types, as before
+		assertTrue(!everything.redact("int", List.of(CLASS_NAME)).equals("int"));
+		assertEquals("int", redactor.redact("int", List.of(CLASS_NAME)));
+
+		String dump = """
+				"main" #1 prio=5 tid=0x1 nid=0x2 waiting
+				\tat com.acme.Host$$Lambda$269/286774984.run(Unknown Source)
+				\tat com.acme.Host$$Lambda$14/0x0000000800c02a00.run(Unknown Source)
+				\tat com.acme.Host$$Lambda/0x00007fb87c2252f8.run(Unknown Source)
+				\tat java.lang.invoke.LambdaForm$MH/0x00007fb87c0c4800.invoke(java.base@21.0.1/LambdaForm$MH)
+				\tat com.acme.Host.lambda$run$0(Host.java:12)
+				\tat java.lang.Thread.run(java.base@21.0.1/Thread.java:1583)
+				""";
+		String expected = """
+				"main" #1 prio=5 tid=0x1 nid=0x2 waiting
+				\tat %1$s/286774984.%6$s(Unknown Source)
+				\tat %2$s/0x0000000800c02a00.%6$s(Unknown Source)
+				\tat %3$s/0x00007fb87c2252f8.%6$s(Unknown Source)
+				\tat %4$s/0x00007fb87c0c4800.invoke(java.base@21.0.1/LambdaForm$MH)
+				\tat %5$s.lambda$run$0(%7$s.java:12)
+				\tat java.lang.Thread.%6$s(java.base@21.0.1/Thread.java:1583)
+				""".formatted(lambda269, lambda14, lambda, form, host, run, host.substring("com.acme.".length()));
+		assertEquals(expected, redactor.redact(dump, List.of(THREAD_DUMP)));
+	}
+
+	@Test
+	void takesOnlyAddressesAndIdentityHashesAsHiddenClassSuffixesOfFrames() {
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("(.*)").hashMethodNames("(.*)").build();
+		// JRockit prints frames in internal form, whose slashes are no hidden-class suffixes
+		StringLocation legacyDump = new StringLocation("vm/runtime/thread_dump", "result", false, List.of());
+		String slashed = "\tat acme/Foo.run()V(Foo.java:12)\n\tat com/acme/Bar.run()V(Bar.java:3)\n";
+		assertEquals(slashed, redactor.redact(slashed, List.of(legacyDump)));
+		// In the default package, the suffix tells a hidden class, with or without a $ in its name,
+		// in frames and lock objects alike
+		String lambda = redactor.redact("Gen$$Lambda", List.of(CLASS_NAME));
+		String lambda5 = redactor.redact("Gen$$Lambda$5", List.of(CLASS_NAME));
+		String hidden = redactor.redact("GenHidden", List.of(CLASS_NAME));
+		String run = redactor.redact("run", List.of(METHOD_NAME));
+		assertTrue(!hidden.equals("GenHidden") && !run.equals("run"), hidden + " " + run);
+		String dump = """
+				\tat Gen$$Lambda/0x000000002e045c38.run(Unknown Source)
+				\tat Gen$$Lambda$5/286774984.run(Unknown Source)
+				\tat GenHidden/0x000000002e045c38.run(Unknown Source)
+				\t- locked <0x00000004336b8a38> (a GenHidden/0x000000002e045c38)
+				""";
+		String expected = """
+				\tat %1$s/0x000000002e045c38.%4$s(Unknown Source)
+				\tat %2$s/286774984.%4$s(Unknown Source)
+				\tat %3$s/0x000000002e045c38.%4$s(Unknown Source)
+				\t- locked <0x00000004336b8a38> (a %3$s/0x000000002e045c38)
+				""".formatted(lambda, lambda5, hidden, run);
+		assertEquals(expected, redactor.redact(dump, List.of(THREAD_DUMP)));
+	}
+
+	@Test
+	void leavesFramesInsideQuotedThreadNamesToTheThreadRule() {
+		String threadName = "look at com.acme.Foo.bar(Foo.java:1) now";
+		String header = '"' + threadName + "\" #14 prio=5 tid=0x1 nid=0x2 waiting\n";
+		String frame = "\tat com.acme.Foo.bar(Foo.java:1)\n";
+		RuleRedactor classes = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").hashMethodNames("^(bar)$")
+				.build();
+		String foo = hashedSource(classes, "com.acme.Foo");
+		String bar = classes.redact("bar", List.of(METHOD_NAME));
+		assertEquals(header + "\tat " + foo + "." + bar + "(" + foo.substring("com.acme.".length()) + ".java:1)\n",
+				classes.redact(header + frame, List.of(THREAD_DUMP)));
+		// So the header gets the hash of the name as recorded, whichever rule comes first
+		RuleRedactor threadsFirst = RuleRedactor.builder().hashThreadNames().hashClassNames("com\\.acme\\.(.*)")
+				.hashMethodNames("^(bar)$").build();
+		RuleRedactor threadsLast = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").hashMethodNames("^(bar)$")
+				.hashThreadNames().build();
+		String expectedHeader = '"' + threadsFirst.redact(threadName, List.of(THREAD_NAME))
+				+ "\" #14 prio=5 tid=0x1 nid=0x2 waiting\n";
+		assertTrue(expectedHeader.startsWith("\"Thread-"), expectedHeader);
+		for (RuleRedactor redactor : List.of(threadsFirst, threadsLast)) {
+			String dump = redactor.redact(header + frame, List.of(THREAD_DUMP));
+			assertTrue(dump.startsWith(expectedHeader), dump);
+			assertTrue(!dump.contains("Foo") && !dump.contains(".bar("), dump);
+		}
+	}
+
+	@Test
+	void hashesLockObjectClassesInEveryThreadDumpTemplate() {
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").build();
+		String foo = hashedSource(redactor, "com.acme.Foo");
+		String inner = hashedSource(redactor, "com.acme.Foo$Inner");
+		String sync = hashedSource(redactor, "com.acme.Foo$Sync");
+		String lambda = hashedSource(redactor, "com.acme.Foo$$Lambda");
+		String dump = """
+				"worker (a com.acme.Foo)" #12 prio=5 tid=0x1 nid=0x2 waiting for monitor entry
+				\t- locked <0x00000004336b8a38> (a com.acme.Foo)
+				\t- waiting to lock <0x00000004336b8a39> (a com.acme.Foo$Inner)
+				\t- waiting on <0x00000004336b8a3a> (a [Lcom.acme.Foo;)
+				\t- parking to wait for  <0x00000004336b8a3b> (a [[Lcom.acme.Foo;)
+				\t- waiting to re-lock in wait() <0x00000004336b8a3c> (a [I)
+				\t- eliminated <owner is scalar replaced> (a java.lang.Class for com.acme.Foo)
+				\t- locked <0x00000004336b8a3d> (a java.lang.Class for [Lcom.acme.Foo;)
+				\t- waiting on the Class initialization monitor for com.acme.Foo
+				\t- locked <0x00000004336b8a3e> (a com.acme.Foo$$Lambda/0x00007fb87c2252f8)
+
+				Found one Java-level deadlock:
+				"worker (a com.acme.Foo)":
+				  waiting to lock monitor 0x00007f8b1c004e00 (object 0x000000076b4d8f88, a com.acme.Foo),
+				  which is held by "other (a com.acme.Foo)"
+				"other (a com.acme.Foo)":
+				  waiting for ownable synchronizer 0x000000076b4d8f90, (a com.acme.Foo$Sync),
+				  which is held by "worker (a com.acme.Foo)"
+				""";
+		String expected = """
+				"worker (a com.acme.Foo)" #12 prio=5 tid=0x1 nid=0x2 waiting for monitor entry
+				\t- locked <0x00000004336b8a38> (a %1$s)
+				\t- waiting to lock <0x00000004336b8a39> (a %2$s)
+				\t- waiting on <0x00000004336b8a3a> (a [L%1$s;)
+				\t- parking to wait for  <0x00000004336b8a3b> (a [[L%1$s;)
+				\t- waiting to re-lock in wait() <0x00000004336b8a3c> (a [I)
+				\t- eliminated <owner is scalar replaced> (a java.lang.Class for %1$s)
+				\t- locked <0x00000004336b8a3d> (a java.lang.Class for [L%1$s;)
+				\t- waiting on the Class initialization monitor for %1$s
+				\t- locked <0x00000004336b8a3e> (a %4$s/0x00007fb87c2252f8)
+
+				Found one Java-level deadlock:
+				"worker (a com.acme.Foo)":
+				  waiting to lock monitor 0x00007f8b1c004e00 (object 0x000000076b4d8f88, a %1$s),
+				  which is held by "other (a com.acme.Foo)"
+				"other (a com.acme.Foo)":
+				  waiting for ownable synchronizer 0x000000076b4d8f90, (a %3$s),
+				  which is held by "worker (a com.acme.Foo)"
+				""".formatted(foo, inner, sync, lambda);
+		for (StringLocation location : compositeLocations()) {
+			if (location.isThreadDump()) {
+				assertEquals(expected, redactor.redact(dump, List.of(location)), location.toString());
+			}
+		}
+		RuleRedactor everything = RuleRedactor.builder().hashClassNames("(.*)").build();
+		// The pattern decides for the class of a mirror, as it does for the class name constant, also
+		// for a primitive type; primitive arrays have no class name
+		String mirrors = "\t- locked <0x00000004336b8a38> (a java.lang.Class for int)\n"
+				+ "\t- eliminated <owner is scalar replaced> (a java.lang.Class for java.lang.String)\n"
+				+ "\t- waiting on <0x00000004336b8a39> (a [[J)\n";
+		String string = everything.redact("java/lang/String", List.of(CLASS_NAME));
+		assertTrue(string.matches("[A-Za-z0-9_$]{12,13}"), string);
+		String expectedMirrors = "\t- locked <0x00000004336b8a38> (a java.lang.Class for "
+				+ everything.redact("int", List.of(CLASS_NAME)) + ")\n"
+				+ "\t- eliminated <owner is scalar replaced> (a java.lang.Class for " + string + ")\n"
+				+ "\t- waiting on <0x00000004336b8a39> (a [[J)\n";
+		assertEquals(expectedMirrors, everything.redact(mirrors, List.of(THREAD_DUMP)));
+		assertTrue(!expectedMirrors.contains("for int)"), "the constant int is hashed, so is the mirror");
+	}
+
+	@Test
+	void hashesClassNamesInOldObjectDescriptions() {
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").build();
+		RuleRedactor everything = RuleRedactor.builder().hashClassNames("(.*)").build();
+		String foo = hashedSource(redactor, "com.acme.Foo");
+		String lambda = hashedSource(redactor, "com.acme.Foo$$Lambda");
+		for (StringLocation description : descriptionLocations()) {
+			List<StringLocation> locations = List.of(description);
+			assertEquals("Class Name: " + foo, redactor.redact("Class Name: com.acme.Foo", locations));
+			assertEquals("Class Name: [[L" + foo + ";", redactor.redact("Class Name: [[Lcom.acme.Foo;", locations));
+			assertEquals("Class Name: " + lambda + "/0x00007fb87c2252f8",
+					redactor.redact("Class Name: com.acme.Foo$$Lambda/0x00007fb87c2252f8", locations));
+			assertEquals("Class Name: [L" + lambda + "/0x00007fb87c2252f8;",
+					redactor.redact("Class Name: [Lcom.acme.Foo$$Lambda/0x00007fb87c2252f8;", locations));
+			assertEquals("Class Name: [I", redactor.redact("Class Name: [I", locations));
+			assertEquals("Class Name: java.lang.String", redactor.redact("Class Name: java.lang.String", locations));
+			assertEquals("Class Name: ", redactor.redact("Class Name: ", locations), "an empty remainder");
+			assertEquals("Class Name: " + everything.redact("int", List.of(CLASS_NAME)),
+					everything.redact("Class Name: int", locations), "the pattern decides for a primitive mirror");
+			assertTrue(!everything.redact("Class Name: java.lang.String", locations)
+					.equals("Class Name: java.lang.String"));
+			assertEquals("Thread Name: com.acme.Foo", redactor.redact("Thread Name: com.acme.Foo", locations),
+					"a thread named like a class");
+			assertEquals("Size: 10", redactor.redact("Size: 10", locations));
+		}
+	}
+
+	@Test
+	void leavesEmptyThreadAndThreadGroupNamesAlone() {
+		RuleRedactor redactor = RuleRedactor.builder().hashThreadNames().build();
+		StringLocation flag = new StringLocation("jdk.StringFlag", "value", false, List.of());
+		StringLocation group = new StringLocation("jdk.types.ThreadGroup", "name", true, List.of());
+		assertEquals("", redactor.redact("", List.of(THREAD_NAME)), "unnamed virtual threads");
+		assertEquals("", redactor.redact("", List.of(flag, THREAD_NAME)));
+		assertEquals("", redactor.redact("", List.of(group)));
+		for (StringLocation description : descriptionLocations()) {
+			assertEquals("Thread Name: ", redactor.redact("Thread Name: ", List.of(description)));
+			assertEquals("Thread Group: ", redactor.redact("Thread Group: ", List.of(description)));
+		}
+		RuleRedactor chained = RuleRedactor.builder().hashThreadNames().replace("", "<EMPTY>").build();
+		assertEquals("<EMPTY>", chained.redact("", List.of(THREAD_NAME)), "later rules still apply");
+	}
+
+	@Test
+	void keepsEmptyStringsWhenHashingNamesOfUnnamedVirtualThreads(@TempDir
+	Path dir) throws Exception {
+		Path input = dir.resolve("input.jfr");
+		try (Recording recording = new Recording()) {
+			recording.enable(WorkEvent.class);
+			recording.start();
+			Thread thread = Thread.ofVirtual().unstarted(() -> {
+				WorkEvent event = new WorkEvent();
+				event.description = "work";
+				event.commit();
+			});
+			thread.start();
+			thread.join();
+			recording.stop();
+			recording.dump(input);
+		}
+		assertTrue(emptyStringCount(input) > 0, "the recording must store the empty name of the thread");
+		boolean[] emptyThreadName = new boolean[1];
+		// An identity redaction of the input, to see the locations of the empty string
+		JfrRedactor.redact(input, dir.resolve("unchanged.jfr"), (value, locations) -> {
+			if (value.isEmpty()) {
+				emptyThreadName[0] |= locations.stream().anyMatch(StringLocation::isThreadName);
+			}
+			return value;
+		});
+		assertTrue(emptyThreadName[0], "the unnamed virtual thread must be recorded with the empty name");
+		Path output = dir.resolve("output.jfr");
+		JfrRedactor.redact(input, output, RuleRedactor.builder().hashThreadNames().build());
+
+		boolean found = false;
+		for (RecordedEvent event : RecordingFile.readAllEvents(output)) {
+			if (event.getEventType().getName().equals("test.Work")) {
+				assertTrue(event.getThread().isVirtual());
+				assertEquals("", event.getThread().getJavaName(), "the unnamed thread stays unnamed");
+				found = true;
+			}
+		}
+		assertTrue(found);
+		assertEquals(emptyStringCount(input), emptyStringCount(output), "no empty string is replaced");
+		// The SHA-256 of the empty string starts with e3b0c442
+		assertTrue(scan(output).indexOf("Thread-e3b0c442") < 0);
+	}
+
+	@Test
+	void hashesThreadGroupNames() {
+		RuleRedactor redactor = RuleRedactor.builder().hashThreadNames().build();
+		List<StringLocation> groups = List.of(new StringLocation("jdk.types.ThreadGroup", "name", true, List.of()),
+				new StringLocation("com.oracle.jfr.types.ThreadGroup", "name", true, List.of()),
+				new StringLocation("ThreadGroup", "name", true, List.of()),
+				new StringLocation("java.lang.String", "value", true, List.of("jdk.types.ThreadGroup.name")),
+				new StringLocation("java.lang.String", "value", true,
+						List.of("com.oracle.jfr.types.ThreadGroup.name")));
+		String name = "Thread Group for Queue: 'weblogic.socket.Muxer'";
+		String hashed = redactor.redact(name, List.of(groups.get(0)));
+		assertTrue(hashed.matches("ThreadGroup-[0-9a-f]{8}"), hashed);
+		String thread = redactor.redact(name, List.of(THREAD_NAME));
+		assertEquals(thread.substring("Thread-".length()), hashed.substring("ThreadGroup-".length()), "same digest");
+		for (StringLocation group : groups) {
+			assertTrue(group.isThreadGroupName() && !group.isThreadName(), group.toString());
+			assertEquals(hashed, redactor.redact(name, List.of(group)), group.toString());
+			assertEquals(thread, redactor.redact(name, List.of(group, THREAD_NAME)), "a thread name wins");
+			assertEquals(thread, redactor.redact(name, List.of(THREAD_NAME, group)), "a thread name wins");
+		}
+		for (StringLocation other : List.of(new StringLocation("jdk.types.ThreadGroup", "name", false, List.of()),
+				new StringLocation("jdk.types.ThreadGroup", "parent", true, List.of()),
+				new StringLocation("java.lang.String", "value", true, List.of("jdk.types.ThreadGroup.parent")),
+				CLASS_NAME)) {
+			assertTrue(!other.isThreadGroupName(), other.toString());
+			assertEquals(name, redactor.redact(name, List.of(other)), other.toString());
+		}
+		assertTrue(!THREAD_NAME.isThreadGroupName());
+		for (StringLocation description : descriptionLocations()) {
+			assertEquals("Thread Group: " + hashed, redactor.redact("Thread Group: " + name, List.of(description)));
+		}
+		// The groups the JVM creates itself name nothing of the application, unless they are also thread names
+		for (String jvmGroup : List.of("system", "main")) {
+			assertEquals(jvmGroup, redactor.redact(jvmGroup, List.of(groups.get(0))), jvmGroup);
+			assertEquals(jvmGroup, redactor.redact(jvmGroup, List.of(groups.get(3))), jvmGroup);
+			assertTrue(redactor.redact(jvmGroup, List.of(groups.get(0), THREAD_NAME)).startsWith("Thread-"), jvmGroup);
+			for (StringLocation description : descriptionLocations()) {
+				assertEquals("Thread Group: " + jvmGroup,
+						redactor.redact("Thread Group: " + jvmGroup, List.of(description)));
+			}
+		}
+		String keyed = RuleRedactor.builder().hashThreadNames(new byte[] {1, 2, 3}).build().redact(name,
+				List.of(groups.get(0)));
+		assertTrue(keyed.matches("ThreadGroup-[0-9a-f]{8}") && !keyed.equals(hashed), keyed);
+	}
+
+	@Test
+	void hashesThreadNamesStoredThroughTheStringPool() {
+		RuleRedactor redactor = RuleRedactor.builder().hashThreadNames().build();
+		String expected = redactor.redact("SecretWorker-0", List.of(THREAD_NAME));
+		for (String referrer : List.of("java.lang.Thread.javaName", "java.lang.Thread.osName", "Thread.name")) {
+			StringLocation pooled = new StringLocation("java.lang.String", "value", true, List.of(referrer));
+			assertTrue(pooled.isThreadName(), pooled.toString());
+			assertEquals(expected, redactor.redact("SecretWorker-0", List.of(pooled)), pooled.toString());
+		}
+		StringLocation symbol = new StringLocation("java.lang.String", "value", true,
+				List.of("jdk.types.Symbol.string"));
+		assertTrue(!symbol.isThreadName());
+		assertEquals("SecretWorker-0", redactor.redact("SecretWorker-0", List.of(symbol)));
+		assertTrue(!new StringLocation("java.lang.Thread", "javaName", false, List.of()).isThreadName(), "inline");
+	}
+
+	/** The class name hashed by the redactor, in source form as it appears in thread dumps */
+	private static String hashedSource(RuleRedactor redactor, String className) {
+		String hashed = redactor.redact(className.replace('.', '/'), List.of(CLASS_NAME));
+		assertTrue(!hashed.equals(className.replace('.', '/')), className);
+		return hashed.replace('/', '.');
+	}
+
+	private static List<StringLocation> descriptionLocations() {
+		return compositeLocations().stream().filter(StringLocation::isOldObjectDescription).toList();
+	}
+
+	private static long emptyStringCount(Path file) throws Exception {
+		StringCountMap strings = scan(file);
+		int entry = strings.indexOf("");
+		return entry < 0 ? 0 : strings.getTotalCount(entry);
+	}
+
+	private static StringCountMap scan(Path file) throws Exception {
+		StringScanner scanner = new StringScanner(true);
+		new StreamingChunkParser().parse(file, scanner);
+		return scanner.getStrings();
 	}
 
 	@Test

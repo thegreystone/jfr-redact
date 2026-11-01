@@ -91,7 +91,8 @@ public final class StringLocation {
 
 	/**
 	 * @return {@code true} if this is the name of a thread: {@code java.lang.Thread.javaName} and
-	 *         {@code java.lang.Thread.osName} in JFR 1.0+, {@code Thread.name} in JFR 0.9
+	 *         {@code java.lang.Thread.osName} in JFR 1.0+, {@code Thread.name} in JFR 0.9, or a
+	 *         string constant referred to by one of them, as written by JMC's flightrecorder.writer
 	 */
 	public boolean isThreadName() {
 		if (!constant) {
@@ -100,7 +101,23 @@ public final class StringLocation {
 		return switch (owner) {
 		case "java.lang.Thread" -> field.equals("javaName") || field.equals("osName");
 		case "Thread" -> field.equals("name");
-		default -> false;
+		default -> isReferredToBy("java.lang.Thread.javaName", "java.lang.Thread.osName", "Thread.name");
+		};
+	}
+
+	/**
+	 * @return {@code true} if this is the name of a thread group:
+	 *         {@code jdk.types.ThreadGroup.name} in JDK 11+,
+	 *         {@code com.oracle.jfr.types.ThreadGroup.name} in JDK 9 and 10,
+	 *         {@code ThreadGroup.name} in JFR 0.9, or a string constant referred to by one of them
+	 */
+	public boolean isThreadGroupName() {
+		if (!constant) {
+			return false;
+		}
+		return switch (owner) {
+		case "jdk.types.ThreadGroup", "com.oracle.jfr.types.ThreadGroup", "ThreadGroup" -> field.equals("name");
+		default -> isReferredToBy("jdk.types.ThreadGroup.name", "com.oracle.jfr.types.ThreadGroup.name");
 		};
 	}
 

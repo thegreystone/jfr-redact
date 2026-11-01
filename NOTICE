@@ -6,7 +6,7 @@ streaming JFR chunk parser in the OpenJDK JDK Mission Control project,
 https://github.com/openjdk/jmc, available under the Universal Permissive
 License v 1.0 or the BSD 3-Clause License.
 
-The test recordings in src/test/resources/recordings come from the test resources of
+Four of the test recordings in src/test/resources/recordings come from the test resources of
 the OpenJDK JDK Mission Control project, https://github.com/openjdk/jmc, available
 under the Universal Permissive License v 1.0:
 
@@ -16,3 +16,9 @@ under the Universal Permissive License v 1.0:
   jdk9-basic.jfr               9u0.jfr, with an IP address replaced using jfr-redact
   jdk9-weblogic-medrec.jfr     wls-medrec-jdk9.jfr
   jdk21-jmc.jfr                jdk21.jfr
+
+The test recording jmc-writer-pooled.jfr was generated for jfr-redact with the
+flightrecorder.writer library of the OpenJDK JDK Mission Control project
+(10.0.0-SNAPSHOT), a pure-Java JFR writer that stores thread, class and thread
+group names through the java.lang.String constant pool. It contains only
+synthetic data.
