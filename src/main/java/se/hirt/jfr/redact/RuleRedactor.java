@@ -54,7 +54,10 @@ import se.hirt.jfr.redact.internal.Utf8;
  * <li>{@link Builder#hashThreadNames()} replaces thread names with {@code Thread-<hash>} and thread
  * group names with {@code ThreadGroup-<hash>}.</li>
  * <li>{@link Builder#hashClassNames(String)} replaces the part of class names matching a regular
- * expression with a hash.</li>
+ * expression with a hash, segment by segment, and the package and module names the expression
+ * matches alike, so that every class name keeps starting with the name of its package. Several
+ * expressions form one rule, in the place of the first, and for each part of a name, the package or
+ * the simple name, the first expression covering a piece of it decides.</li>
  * <li>{@link Builder#hashMethodNames(String)} does the same for method names.</li>
  * <li>{@link Builder#replaceIf(Predicate, UnaryOperator)} replaces strings stored at given
  * locations.</li>
@@ -114,10 +117,10 @@ import se.hirt.jfr.redact.internal.Utf8;
  * way as elsewhere: thread names in the headers and lock owners of thread dumps and in the
  * {@code Thread Name:} of old object descriptions, thread group names in their
  * {@code Thread Group:}, class names in the frames and lock objects of thread dumps and in the
- * {@code Class Name:} of old object descriptions, method names in the frames, and packages in class
- * names. Glob and location-based rules match the whole current text, including preceding rewrites,
- * and the first matching whole-string rule decides. Location predicates see all locations of the
- * value.
+ * {@code Class Name:} of old object descriptions, module names in the locations of the frames,
+ * method names in the frames, and packages in class names. Glob and location-based rules match the
+ * whole current text, including preceding rewrites, and the first matching whole-string rule
+ * decides. Location predicates see all locations of the value.
  * <p>
  * Since a decision applies to every occurrence of a string, a rule matching a string at one
  * location replaces it everywhere. For example, hashing the thread name {@code main} also renames
@@ -150,6 +153,8 @@ public final class RuleRedactor implements StringRedactor {
 	/** Builds a {@link RuleRedactor} from rules, tried in the order added */
 	public static final class Builder {
 		private final List<Rule> rules = new ArrayList<>();
+		/** Where the one class name rule is among the rules, or -1 before the first expression */
+		private int classNames = -1;
 
 		private Builder() {
 		}
@@ -214,43 +219,111 @@ public final class RuleRedactor implements StringRedactor {
 
 		/**
 		 * Adds a rule replacing the part of class names matching a regular expression with a base64
-		 * hash of that part. The expression is matched against the class name in source form, such
-		 * as {@code com.acme.secret.Foo}, and the part replaced is the first capture group if the
-		 * expression has one, or else the whole match. For example, {@code com\.acme\.(.*)} turns
-		 * {@code com.acme.secret.Foo} into {@code com.acme.<hash>}. The class name is replaced
-		 * wherever it occurs: in internal form ({@code com/acme/secret/Foo}), in array class names
-		 * ({@code [Lcom/acme/secret/Foo;}), in method descriptors, in the frames and lock objects
-		 * of thread dumps and in the {@code Class Name:} of old object descriptions. Array prefixes
-		 * and descriptor delimiters are preserved, and primitive arrays are unchanged. A hidden
-		 * class, such as {@code com.acme.Foo$$Lambda/0x00007fb87c2252f8}, is matched by its host
-		 * class, {@code com.acme.Foo$$Lambda}, and the address or identity hash the JVM appends in
-		 * each run is kept, so that the class gets the same hash in every form, and from JDK 21 on
-		 * in every run, while JDK 8 to 20 number their lambda proxy classes per run, as in
+		 * hash of that part, segment by segment, and the package and module names the expression
+		 * matches alike, so that every class name keeps starting with the name of its package,
+		 * which JDK Mission Control relies on to derive the simple name of a class, and so that the
+		 * packages the expression hides are hidden wherever they are stored. The expression is
+		 * searched for in the class name in source form, such as {@code com.acme.secret.Foo}, and
+		 * the part found is the first capture group if the expression has one, or else the whole
+		 * match. The piece of that part within the simple name, {@code Foo}, is replaced by its
+		 * hash; nested classes ({@code Outer$Inner}) and the host of a hidden class
+		 * ({@code Host$$Lambda}) are one segment. The package, {@code com.acme.secret}, is handled
+		 * on its own: the expression is searched for in the package name followed by a dot,
+		 * {@code com.acme.secret.}, and in every segment the part found covers, the covered
+		 * characters are replaced by their hash, never the dots. Package names stored on their own
+		 * ({@link StringLocation#isPackageName()}) and module names
+		 * ({@link StringLocation#isModuleName()}) are replaced the same way, so that the package
+		 * part of a class name, the constant of its package and the name of its module always
+		 * agree.
+		 * <p>
+		 * For example, {@code com\.acme\.(.*)} turns {@code com.acme.secret.Foo} into
+		 * {@code com.acme.<hash>.<hash>} and the package {@code com.acme.secret} into
+		 * {@code com.acme.<hash>}, and {@code (.*)} hashes every segment of every class, package
+		 * and module name. Package segments are only hashed where the expression matches the
+		 * package itself, followed by a dot: {@code (.*)Impl$} turns
+		 * {@code com.acme.secret.FooImpl} into {@code com.acme.secret.<hash>Impl} and leaves the
+		 * package, which the recording stored readably on its own anyway. Prefix expressions such
+		 * as {@code com\.acme\.(.*)} or {@code (.*)} are the way to hide packages. Only the first
+		 * match of the expression counts, so a literal found in the package before the simple name
+		 * leaves the simple name alone: {@code Secret} turns {@code com.acme.Secret.SecretService}
+		 * into {@code com.acme.<hash>.SecretService}. An expression anchored to the end of the
+		 * name, such as {@code Secret[^.]*$}, hashes the simple name instead, and a second
+		 * expression can hash the package. Two kinds of expression change nothing: one whose group
+		 * covers package segments only while the rest of it requires the simple name, as in
+		 * {@code (com\.acme)\.secret\.Foo}, since the package is matched on its own, and one
+		 * anchored to the end of a package name, as in {@code (secret)$}, since the package is
+		 * followed by a dot; end it with the dot instead, as in {@code (secret)\.}.
+		 * <p>
+		 * The class name is replaced wherever it occurs: in internal form
+		 * ({@code com/acme/secret/Foo}), in array class names ({@code [Lcom/acme/secret/Foo;}), in
+		 * method descriptors, in the frames and lock objects of thread dumps, whose module segments
+		 * ({@code java.base@21/}) are hashed as module names and whose source file names
+		 * ({@code Foo.java:12}) are hashed with the class, as is the bare name of the class HotSpot
+		 * prints as the location of a generated class ({@code LambdaForm$MH}), in the
+		 * {@code Class Name:} of old object descriptions and in the inline class names and
+		 * descriptors of {@code jdk.CompilerInlining} events. Array prefixes and descriptor
+		 * delimiters are preserved, and primitive arrays are unchanged. A hidden class, such as
+		 * {@code com.acme.Foo$$Lambda/0x00007fb87c2252f8}, is matched by its host class,
+		 * {@code com.acme.Foo$$Lambda}, and the address or identity hash the JVM appends in each
+		 * run is kept, so that the class gets the same hash in every form, and from JDK 21 on in
+		 * every run, while JDK 8 to 20 number their lambda proxy classes per run, as in
 		 * {@code Foo$$Lambda$269} and {@code Foo$$Lambda$14}. The same text always gets the same
-		 * hash. Package names are not class names, so they are not affected.
+		 * hash. Free text naming classes or packages is not touched: module locations
+		 * ({@code jrt:/jdk.jfr}), JVM arguments, exception messages, paths and the like.
+		 * <p>
+		 * Since segments are hashed one by one, a short and common segment such as {@code impl} or
+		 * {@code util} is easy to guess from its unkeyed hash, which is the same in every package
+		 * it occurs in; use {@link #hashClassNames(String, byte[])} when the names must stay
+		 * secret.
+		 * <p>
+		 * Several expressions, added by repeated calls, form one rule, in the place of the first.
+		 * For each part of a name, the package or the simple name, the first expression covering a
+		 * piece of it decides, with its own hash, so that the package part of a class, the constant
+		 * of its package and the name of its module always agree, whichever expression hashed the
+		 * simple name. For example, {@code com\.acme\.(.*)} followed by {@code (.*)} turns
+		 * {@code com.acme.secret.Foo} into {@code com.acme.<hash>.<hash>} and {@code org.other.Bar}
+		 * into {@code <hash>.<hash>.<hash>}, while {@code com.acme.Baz} becomes
+		 * {@code <hash>.<hash>.<hash>}, since the first expression covers nothing of the package
+		 * {@code com.acme} itself and the second does.
 		 */
 		public Builder hashClassNames(String regex) {
-			rules.add(new ClassNameRule(Pattern.compile(regex), text -> base64(digest("SHA-256", null, text))));
-			return this;
+			return hashClassNames(Pattern.compile(regex), text -> base64(digest("SHA-256", null, text)));
 		}
 
 		/**
 		 * Like {@link #hashClassNames(String)}, but uses HMAC-SHA256 with a secret key, so that
-		 * names cannot be found by hashing guesses without the key.
+		 * names cannot be found by hashing guesses without the key. Keyed and unkeyed expressions
+		 * combine like any others: each part of a name is hashed by the expression deciding it.
 		 */
 		public Builder hashClassNames(String regex, byte[] key) {
 			byte[] keyCopy = key.clone();
-			rules.add(new ClassNameRule(Pattern.compile(regex), text -> base64(digest("HmacSHA256", keyCopy, text))));
+			return hashClassNames(Pattern.compile(regex), text -> base64(digest("HmacSHA256", keyCopy, text)));
+		}
+
+		/**
+		 * Adds the expression to the class name rule, which is one rule for all the expressions, in
+		 * the place of the first, so that the package part of a class, the constant of its package
+		 * and the name of its module are always decided by the same expression.
+		 */
+		private Builder hashClassNames(Pattern pattern, UnaryOperator<String> hash) {
+			SegmentHasher hasher = new SegmentHasher(pattern, hash);
+			if (classNames < 0) {
+				classNames = rules.size();
+				rules.add(new ClassNameRule(List.of(hasher)));
+			} else {
+				rules.set(classNames, ((ClassNameRule) rules.get(classNames)).with(hasher));
+			}
 			return this;
 		}
 
 		/**
 		 * Adds a rule replacing the part of method names matching a regular expression with a
 		 * base64 hash of that part, the first capture group if the expression has one, or else the
-		 * whole match. Method names are replaced as constants and in the stack traces of thread
-		 * dumps. Since a decision applies to every occurrence of a string, a method name is
-		 * replaced in all classes declaring a method with that name. The expression is searched
-		 * for, so {@code (processRecord)} also replaces the name inside
+		 * whole match. Method names are replaced as constants, in the stack traces of thread dumps
+		 * and in the inline callee names of {@code jdk.CompilerInlining} events, see
+		 * {@link StringLocation#isMethodName()}. Since a decision applies to every occurrence of a
+		 * string, a method name is replaced in all classes declaring a method with that name. The
+		 * expression is searched for, so {@code (processRecord)} also replaces the name inside
 		 * {@code lambda$processRecord$0}.
 		 */
 		public Builder hashMethodNames(String regex) {
@@ -567,20 +640,30 @@ public final class RuleRedactor implements StringRedactor {
 	/**
 	 * A stack frame in a thread dump, {@code at java.util.List.of(java.base@25/List.java:1)}: the
 	 * class, the method and the location, which is a file name and line, {@code Native Method} or
-	 * {@code Unknown Source}, possibly prefixed by a module
+	 * {@code Unknown Source}, possibly prefixed by a module. Everything up to a slash within the
+	 * parentheses is taken to be the module HotSpot prints, {@code java.base@25/} or {@code demo/},
+	 * which a {@code SourceFile} attribute with a slash, as compilers other than javac may write,
+	 * would also satisfy: its first path segment is then renamed like a module.
 	 */
 	private static final Pattern DUMP_FRAME = Pattern
 			.compile("\\bat (" + DUMP_CLASS_NAME + ")\\.([\\p{javaJavaIdentifierPart}<>]+)\\(([^()/]*/)?([^()]*)\\)");
-	/** The file name of a frame location, Foo.java:12 */
+	/**
+	 * The file name of a frame location, {@code Foo.java:12} or {@code Foo.java}. The other
+	 * locations HotSpot prints, {@code Native Method}, {@code Unknown Source}, {@code Redefined}
+	 * and the bare name of a generated class, {@code LambdaForm$MH}, do not match; the bare name is
+	 * recognized by the class of the frame, see {@code ClassNameRule.rewriteFrames}.
+	 */
 	private static final Pattern DUMP_FILE = Pattern
 			.compile("([\\p{javaJavaIdentifierPart}-]+)(\\.\\p{javaJavaIdentifierPart}+(?::\\d+)?)");
 
 	/**
-	 * Replaces the part of the text matching the pattern, the first group if any, with its hash.
+	 * Finds the part of the text to replace: the first group of the first match if the pattern has
+	 * one, or else the whole match.
 	 *
-	 * @return the new text, or {@code null} if the pattern does not match
+	 * @return the start and end of the part, or {@code null} if the pattern does not match or the
+	 *         part is empty
 	 */
-	private static String replaceMatch(Pattern pattern, UnaryOperator<String> hash, String text) {
+	private static int[] matchSpan(Pattern pattern, String text) {
 		Matcher m = pattern.matcher(text);
 		if (!m.find()) {
 			return null;
@@ -589,7 +672,20 @@ public final class RuleRedactor implements StringRedactor {
 		if (m.start(group) < 0 || m.start(group) == m.end(group)) {
 			return null;
 		}
-		return text.substring(0, m.start(group)) + hash.apply(m.group(group)) + text.substring(m.end(group));
+		return new int[] {m.start(group), m.end(group)};
+	}
+
+	/**
+	 * Replaces the part of the text matching the pattern, the first group if any, with its hash.
+	 *
+	 * @return the new text, or {@code null} if the pattern does not match
+	 */
+	private static String replaceMatch(Pattern pattern, UnaryOperator<String> hash, String text) {
+		int[] span = matchSpan(pattern, text);
+		if (span == null) {
+			return null;
+		}
+		return text.substring(0, span[0]) + hash.apply(text.substring(span[0], span[1])) + text.substring(span[1]);
 	}
 
 	/**
@@ -645,7 +741,93 @@ public final class RuleRedactor implements StringRedactor {
 		}
 	}
 
-	/** Replaces the part of class names matching an expression with a hash */
+	/**
+	 * Hashes the parts of qualified names in source form that one expression covers, segment by
+	 * segment: the part of a match within a dot-separated segment is replaced by the hash of that
+	 * part, and a dot never is. A package name is matched followed by a dot, as it appears in the
+	 * names of its classes, and a class name is matched whole, hashing only the part of the match
+	 * within its last segment, the simple name; {@link ClassNameRule} maps the package of the class
+	 * as a package name, so that the package part of a class name is always mapped to the same text
+	 * as the package name on its own, which keeps every class within its package, and maps a module
+	 * name like a package name. The replaced part of a match is its first group if the expression
+	 * has one, or else the whole match, and an empty part is no match, as in
+	 * {@link RuleRedactor#replaceMatch}.
+	 *
+	 * @see Builder#hashClassNames(String)
+	 */
+	private static final class SegmentHasher {
+		private final Pattern pattern;
+		private final UnaryOperator<String> hash;
+
+		SegmentHasher(Pattern pattern, UnaryOperator<String> hash) {
+			this.pattern = pattern;
+			this.hash = hash;
+		}
+
+		/**
+		 * Maps a package or module name in source form, such as {@code com.acme.secret}: matches
+		 * the expression against the name followed by a dot and hashes the covered part of each
+		 * segment
+		 *
+		 * @return the mapped name, or {@code null} if no part of a segment is covered, as for the
+		 *         empty name of the default package or the unnamed module
+		 */
+		String mapPackage(String name) {
+			if (name.isEmpty()) {
+				return null;
+			}
+			int[] span = matchSpan(pattern, name + '.');
+			return span == null ? null : hashCovered(name, span[0], Math.min(span[1], name.length()));
+		}
+
+		/**
+		 * Hashes the part of the last segment of a class name, starting at {@code start}, that the
+		 * match against the whole name covers
+		 *
+		 * @return the mapped simple name, or {@code null} if the match does not reach the segment
+		 */
+		private String mapSimpleName(String name, int start) {
+			int[] span = matchSpan(pattern, name);
+			if (span == null || span[1] <= start) {
+				return null;
+			}
+			int from = Math.max(span[0], start);
+			return name.substring(start, from) + hash.apply(name.substring(from, span[1])) + name.substring(span[1]);
+		}
+
+		/**
+		 * Replaces the part of each dot-separated segment of the text within {@code [from, to)}
+		 * with the hash of that part, never a dot
+		 *
+		 * @return the new text, or {@code null} if no part of a segment is covered
+		 */
+		private String hashCovered(String text, int from, int to) {
+			StringBuilder result = null;
+			int copied = 0;
+			for (int segment = 0; segment <= text.length();) {
+				int end = text.indexOf('.', segment);
+				if (end < 0) {
+					end = text.length();
+				}
+				int start = Math.max(segment, from);
+				int stop = Math.min(end, to);
+				if (start < stop) {
+					if (result == null) {
+						result = new StringBuilder(text.length() + 32);
+					}
+					result.append(text, copied, start).append(hash.apply(text.substring(start, stop)));
+					copied = stop;
+				}
+				segment = end + 1;
+			}
+			return result == null ? null : result.append(text, copied, text.length()).toString();
+		}
+	}
+
+	/**
+	 * Replaces the part of class names matching an expression with a hash, segment by segment, and
+	 * the package and module names the expression matches alike, see {@link SegmentHasher}
+	 */
 	private static final class ClassNameRule implements Rule {
 		/**
 		 * The class of an object in a thread dump, which may be an array class, as the group
@@ -690,25 +872,103 @@ public final class RuleRedactor implements StringRedactor {
 		private static final Pattern INTERNAL_HIDDEN_CLASS_SUFFIX = Pattern.compile("\\+0x[0-9a-fA-F]+$");
 		private static final String OLD_OBJECT_CLASS_NAME = "Class Name: ";
 
-		private final Pattern pattern;
-		private final UnaryOperator<String> hash;
+		/**
+		 * The expressions in the order added: for each part of a name, the package or the simple
+		 * name, the first one covering a piece of it decides, with its hash
+		 */
+		private final List<SegmentHasher> hashers;
 
-		ClassNameRule(Pattern pattern, UnaryOperator<String> hash) {
-			this.pattern = pattern;
-			this.hash = hash;
+		ClassNameRule(List<SegmentHasher> hashers) {
+			this.hashers = hashers;
+		}
+
+		/** @return a rule trying the expression after the others */
+		ClassNameRule with(SegmentHasher hasher) {
+			List<SegmentHasher> more = new ArrayList<>(hashers);
+			more.add(hasher);
+			return new ClassNameRule(List.copyOf(more));
+		}
+
+		/**
+		 * A renamed class or package: the new name, and the hash of the expression that decided the
+		 * simple name of the class, or else its package, which also hashes the source file names of
+		 * its frames, so that a file named like its class gets the hash of the class
+		 */
+		private record Renamed(String name, UnaryOperator<String> hash) {
 		}
 
 		@Override
 		public String apply(String value, List<StringLocation> locations) {
+			// A name stored both as a class and as a package, which javac forbids and the JVM allows,
+			// is renamed as the package, whichever location comes first, so that its classes stay in it
+			boolean className = false;
+			boolean descriptor = false;
 			for (StringLocation location : locations) {
-				if (location.isClassName()) {
-					return renameClassName(value);
+				if (location.isPackageName() || location.isModuleName()) {
+					return renamePackageName(value);
 				}
-				if (location.isMethodDescriptor()) {
-					return renameInDescriptor(value);
+				className |= location.isClassName();
+				descriptor |= location.isMethodDescriptor();
+			}
+			return className ? renameClassName(value) : descriptor ? renameInDescriptor(value) : null;
+		}
+
+		/**
+		 * Maps a package or module name in source form by the first expression covering a piece of
+		 * it, see {@link SegmentHasher#mapPackage}
+		 *
+		 * @return the mapped name with the hash of that expression, or {@code null} if no
+		 *         expression covers a piece of a segment
+		 */
+		private Renamed mapPackage(String name) {
+			for (SegmentHasher hasher : hashers) {
+				String mapped = hasher.mapPackage(name);
+				if (mapped != null) {
+					return new Renamed(mapped, hasher.hash);
 				}
 			}
 			return null;
+		}
+
+		/**
+		 * Maps the simple name of a class, starting at {@code start} of the name in source form, by
+		 * the first expression whose match reaches into it, see {@link SegmentHasher#mapSimpleName}
+		 *
+		 * @return the mapped simple name with the hash of that expression, or {@code null} if no
+		 *         expression reaches into it
+		 */
+		private Renamed mapSimpleName(String name, int start) {
+			for (SegmentHasher hasher : hashers) {
+				String mapped = hasher.mapSimpleName(name, start);
+				if (mapped != null) {
+					return new Renamed(mapped, hasher.hash);
+				}
+			}
+			return null;
+		}
+
+		/**
+		 * Maps a class name in source form without the suffix of a hidden class, such as
+		 * {@code com.acme.secret.Foo} or {@code Foo} in the default package: the simple name by the
+		 * first expression reaching into it and the package by the first covering a piece of it, as
+		 * the package name on its own is mapped
+		 *
+		 * @return the mapped name, or {@code null} if no expression covers a piece of the package
+		 *         or of the simple name
+		 */
+		private Renamed mapClass(String name) {
+			int dot = name.lastIndexOf('.');
+			Renamed simpleName = mapSimpleName(name, dot + 1);
+			if (dot < 0) {
+				return simpleName;
+			}
+			Renamed packageName = mapPackage(name.substring(0, dot));
+			if (packageName == null && simpleName == null) {
+				return null;
+			}
+			String renamed = (packageName == null ? name.substring(0, dot) : packageName.name()) + '.'
+					+ (simpleName == null ? name.substring(dot + 1) : simpleName.name());
+			return new Renamed(renamed, (simpleName == null ? packageName : simpleName).hash());
 		}
 
 		@Override
@@ -724,30 +984,96 @@ public final class RuleRedactor implements StringRedactor {
 		}
 
 		/**
-		 * Renames the classes of the frames, except within quoted thread names, and hashes the
-		 * source file names of renamed classes, as they would reveal the class names
+		 * Renames the classes of the frames, except within quoted thread names, hashes the source
+		 * file names of renamed classes, as they would reveal the class names, and the bare name
+		 * HotSpot prints as the location of a generated class instead of a file, which is the name
+		 * of the class, and renames the modules of the locations like packages. The other
+		 * locations, {@code Native Method}, {@code Unknown Source} and {@code Redefined}, stay. The
+		 * file name and the bare name are hashed by the expression that renamed the class, see
+		 * {@link Renamed}.
 		 */
 		private String rewriteFrames(String text) {
 			Matcher m = DUMP_FRAME.matcher(text);
 			StringBuilder result = null;
 			int copied = 0;
 			while (m.find()) {
-				String renamed = inQuotedName(text, m.start()) ? null : renameClassName(m.group(1));
-				if (renamed == null) {
+				if (inQuotedName(text, m.start())) {
+					continue;
+				}
+				Renamed renamed = renameClass(m.group(1), false);
+				String module = m.start(3) < 0 ? null : renameFrameModule(m.group(3));
+				if (renamed == null && module == null) {
 					continue;
 				}
 				if (result == null) {
 					result = new StringBuilder(text.length() + 64);
 				}
-				result.append(text, copied, m.start(1)).append(renamed);
-				copied = m.end(1);
-				Matcher file = DUMP_FILE.matcher(m.group(4));
-				if (file.matches()) {
-					result.append(text, copied, m.start(4)).append(hash.apply(file.group(1)));
-					copied = m.start(4) + file.end(1);
+				if (renamed != null) {
+					result.append(text, copied, m.start(1)).append(renamed.name());
+					copied = m.end(1);
+				}
+				if (module != null) {
+					result.append(text, copied, m.start(3)).append(module);
+					copied = m.end(3);
+				}
+				if (renamed != null) {
+					String location = m.group(4);
+					Matcher file = DUMP_FILE.matcher(location);
+					if (file.matches()) {
+						result.append(text, copied, m.start(4)).append(renamed.hash().apply(file.group(1)));
+						copied = m.start(4) + file.end(1);
+					} else if (location.equals(simpleHostName(m.group(1)))) {
+						result.append(text, copied, m.start(4)).append(renamed.hash().apply(location));
+						copied = m.end(4);
+					}
 				}
 			}
 			return result == null ? text : result.append(text, copied, text.length()).toString();
+		}
+
+		/**
+		 * The simple name of the host class of a frame, {@code LambdaForm$MH} for
+		 * {@code java.lang.invoke.LambdaForm$MH/0x00007fb87c0c4800}, which HotSpot prints as the
+		 * location of a generated class, whose source file is named like the class and has no
+		 * extension
+		 */
+		private static String simpleHostName(String className) {
+			String host = className.substring(0, suffixStart(HIDDEN_CLASS_SUFFIX, className));
+			return host.substring(host.lastIndexOf('.') + 1);
+		}
+
+		/**
+		 * Renames the module of a frame location, {@code java.base@21.0.1/} or {@code demo/}, like
+		 * a package, keeping the version and the slash
+		 *
+		 * @return the renamed text, or {@code null} if the module is not renamed
+		 */
+		private String renameFrameModule(String module) {
+			int end = module.indexOf('@');
+			if (end < 0) {
+				end = module.length() - 1; // The slash
+			}
+			Renamed renamed = mapPackage(module.substring(0, end));
+			return renamed == null ? null : renamed.name() + module.substring(end);
+		}
+
+		/**
+		 * Renames a package or module name as the package part of its classes is renamed, keeping
+		 * the form of the input: HotSpot stores package names in internal form,
+		 * {@code com/acme/secret}, and module names in source form, {@code java.base}
+		 *
+		 * @return the renamed name, or {@code null} if no part of a segment is covered
+		 */
+		private String renamePackageName(String name) {
+			if (name.indexOf('/') < 0) {
+				return nameOf(mapPackage(name));
+			}
+			Renamed renamed = mapPackage(name.replace('/', '.'));
+			return renamed == null ? null : renamed.name().replace('.', '/');
+		}
+
+		private static String nameOf(Renamed renamed) {
+			return renamed == null ? null : renamed.name();
 		}
 
 		/**
@@ -786,20 +1112,20 @@ public final class RuleRedactor implements StringRedactor {
 		 */
 		private String renameClassName(String name) {
 			if (!name.startsWith("[")) {
-				return renameClass(name, false);
+				return nameOf(renameClass(name, false));
 			}
 			int component = name.lastIndexOf('[') + 1;
 			if (component >= name.length() || name.charAt(component) != 'L' || !name.endsWith(";")) {
 				return null;
 			}
-			String renamed = renameClass(name.substring(component + 1, name.length() - 1), false);
-			return renamed == null ? null : name.substring(0, component + 1) + renamed + ";";
+			Renamed renamed = renameClass(name.substring(component + 1, name.length() - 1), false);
+			return renamed == null ? null : name.substring(0, component + 1) + renamed.name() + ";";
 		}
 
 		/**
-		 * Renames a class that is not an array: splits off the suffix of a hidden class, matches
-		 * the pattern against the source form of the host class, and keeps the form of the input,
-		 * so that slashed names stay slashed and dotted names dotted.
+		 * Renames a class that is not an array: splits off the suffix of a hidden class, maps the
+		 * source form of the host class segment by segment, and keeps the form of the input, so
+		 * that slashed names stay slashed and dotted names dotted.
 		 *
 		 * @param internal
 		 *            {@code true} if the name is known to be in internal form, as in a descriptor,
@@ -808,9 +1134,10 @@ public final class RuleRedactor implements StringRedactor {
 		 *            is more likely a class name, see {@link #isClassOfSingleSegmentPackage}. A
 		 *            dotted name may end in a slash segment that is no suffix, and a name in the
 		 *            default package has no separator to decide by, which the suffix grammar does.
-		 * @return the renamed name, or {@code null} if the pattern does not match
+		 * @return the renamed name with the hash of the expression that renamed it, or {@code null}
+		 *         if no expression matches
 		 */
-		private String renameClass(String name, boolean internal) {
+		private Renamed renameClass(String name, boolean internal) {
 			int hostEnd = name.length();
 			if (!internal) {
 				// Only a name with a slash or a plus can carry a suffix, which spares most frames the pattern
@@ -824,11 +1151,12 @@ public final class RuleRedactor implements StringRedactor {
 				hostEnd = suffixStart(INTERNAL_HIDDEN_CLASS_SUFFIX, name);
 			}
 			String host = name.substring(0, hostEnd);
-			String renamed = replaceMatch(pattern, hash, internal ? host.replace('/', '.') : host);
-			if (renamed == null) {
-				return null;
+			Renamed renamed = mapClass(internal ? host.replace('/', '.') : host);
+			if (renamed == null || !internal && hostEnd == name.length()) {
+				return renamed;
 			}
-			return (internal ? renamed.replace('.', '/') : renamed) + name.substring(hostEnd);
+			return new Renamed((internal ? renamed.name().replace('.', '/') : renamed.name()) + name.substring(hostEnd),
+					renamed.hash());
 		}
 
 		/**
@@ -866,7 +1194,7 @@ public final class RuleRedactor implements StringRedactor {
 				if (end < 0) {
 					break;
 				}
-				String renamed = renameClass(descriptor.substring(i + 1, end), true);
+				String renamed = nameOf(renameClass(descriptor.substring(i + 1, end), true));
 				if (renamed != null) {
 					if (result == null) {
 						result = new StringBuilder(descriptor.length() + 16);

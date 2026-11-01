@@ -85,9 +85,16 @@ public final class Main {
 			                        names with ThreadGroup-<hash of the name>
 			  --hash-class-names <regex>
 			                        Replace the part of class names matching the expression (the first
-			                        group, if any) with a hash, as in 'com\\.acme\\.(.*)': as constants,
-			                        in descriptors, thread dumps and old-object descriptions. Can be
-			                        repeated
+			                        group, if any) with a hash, segment by segment, as in
+			                        'com\\.acme\\.(.*)', which turns com.acme.secret.Foo into
+			                        com.acme.<hash>.<hash> and its package into com.acme.<hash>: as
+			                        constants, in descriptors, thread dumps and old-object descriptions.
+			                        Package and module names the expression matches, followed by a dot,
+			                        are hashed alike, so prefix expressions hide packages, while
+			                        '(.*)Impl$' hashes simple names only. Can be repeated: the
+			                        expressions form one rule, in the place of the first, and for each
+			                        part of a name, the package or the simple name, the first expression
+			                        covering a piece of it decides
 			  --hash-method-names <regex>
 			                        Same for method names. Can be repeated
 			  --rename-package <package> <new name>

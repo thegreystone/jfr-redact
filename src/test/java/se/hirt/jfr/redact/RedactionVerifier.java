@@ -33,15 +33,20 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
+import jdk.jfr.ValueDescriptor;
+import jdk.jfr.consumer.RecordedClass;
 import jdk.jfr.consumer.RecordedEvent;
+import jdk.jfr.consumer.RecordedObject;
 import jdk.jfr.consumer.RecordingFile;
 import se.hirt.jfr.redact.parser.ChunkParserListener;
 import se.hirt.jfr.redact.parser.ChunkTypes;
@@ -58,6 +63,8 @@ import se.hirt.jfr.redact.scan.StringScanner;
 public final class RedactionVerifier {
 	/** Raw byte search is quadratic-ish, so it is limited to the longest redacted strings */
 	private static final int RAW_SEARCH_LIMIT = 300;
+	/** How many classes outside their packages {@link #checkClassPackageInvariant} spells out */
+	private static final int CLASS_PROBLEMS_REPORTED = 5;
 
 	private RedactionVerifier() {
 	}
@@ -268,6 +275,90 @@ public final class RedactionVerifier {
 			}
 		}
 		return -1;
+	}
+
+	/**
+	 * Checks what parsers deriving the simple name of a class from its package name assume, as JDK
+	 * Mission Control's does: that the name of every class the JDK's parser reaches, through event
+	 * fields, stack frames, class loaders, old object samples and other values, starts with the
+	 * name of its package followed by a separator, and goes on. Array classes are checked by their
+	 * component class, and classes without a package are not checked. Constants are shared, so a
+	 * stack trace, a method or a class is visited once per chunk. Values the JDK's parser fails to
+	 * read, as it does for some fields written by JMC's writer, where {@code jfr print} fails the
+	 * same way, are skipped. The {@link #aggressive} redactor breaks the invariant by design, so
+	 * {@link #verify} does not check it.
+	 *
+	 * @return the problems found, the first {@value #CLASS_PROBLEMS_REPORTED} classes spelled out
+	 *         and the rest counted, empty if every class name starts with its package name
+	 */
+	public static List<String> checkClassPackageInvariant(Path recording) throws IOException {
+		List<String> problems = new ArrayList<>();
+		Set<Object> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+		int[] counts = new int[2]; // Classes checked, and classes outside their packages
+		try (RecordingFile file = new RecordingFile(recording)) {
+			while (file.hasMoreEvents()) {
+				checkClasses(file.readEvent(), seen, problems, counts);
+			}
+		}
+		check(problems, counts[0] > 0, "no classes reached");
+		if (counts[1] > CLASS_PROBLEMS_REPORTED) {
+			problems.add("... and " + (counts[1] - CLASS_PROBLEMS_REPORTED) + " more classes outside their packages");
+		}
+		return problems;
+	}
+
+	private static void checkClasses(Object value, Set<Object> seen, List<String> problems, int[] counts) {
+		if (value instanceof Object[] array) {
+			for (Object element : array) {
+				checkClasses(element, seen, problems, counts);
+			}
+			return;
+		}
+		if (!(value instanceof RecordedObject object)) {
+			return;
+		}
+		if (!(object instanceof RecordedEvent) && !seen.add(object)) {
+			return; // A constant visited before
+		}
+		if (object instanceof RecordedClass type) {
+			checkClass(type, problems, counts);
+		}
+		for (ValueDescriptor field : object.getFields()) {
+			if (field.getFields().isEmpty()) {
+				continue; // A primitive or a string, which cannot hold a class
+			}
+			Object nested;
+			try {
+				nested = object.getValue(field.getName());
+			} catch (RuntimeException e) {
+				continue; // A field the JDK's parser cannot read
+			}
+			checkClasses(nested, seen, problems, counts);
+		}
+	}
+
+	private static void checkClass(RecordedClass type, List<String> problems, int[] counts) {
+		String name = type.getName();
+		String component = name.replaceFirst("^\\[+", "");
+		if (component.length() < name.length()) {
+			if (!component.startsWith("L") || !component.endsWith(";")) {
+				return; // A primitive array, which has no package
+			}
+			component = component.substring(1, component.length() - 1);
+		}
+		counts[0]++;
+		RecordedObject pkg = type.hasField("package") ? type.getValue("package") : null;
+		String packageName = pkg == null ? null : pkg.getString("name");
+		if (packageName == null || packageName.isEmpty()) {
+			return;
+		}
+		// The JDK's parser gives names in source form, the package constant is in internal form
+		String prefix = packageName.replace('/', '.') + ".";
+		if (!component.startsWith(prefix) || component.length() == prefix.length()) {
+			if (counts[1]++ < CLASS_PROBLEMS_REPORTED) {
+				problems.add("class " + name + " is not named within its package " + packageName);
+			}
+		}
 	}
 
 	private static StringScanner scan(Path recording) throws IOException {

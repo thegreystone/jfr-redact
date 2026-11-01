@@ -38,6 +38,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.Test;
@@ -65,6 +66,14 @@ class RuleRedactorTest {
 	private static final StringLocation THREAD_NAME = new StringLocation("java.lang.Thread", "javaName", true,
 			List.of());
 	private static final StringLocation THREAD_DUMP = new StringLocation("jdk.ThreadDump", "result", false, List.of());
+	private static final StringLocation PACKAGE_NAME = new StringLocation("jdk.types.Symbol", "string", true,
+			List.of("jdk.types.Package.name"));
+	private static final StringLocation MODULE_NAME = new StringLocation("jdk.types.Symbol", "string", true,
+			List.of("jdk.types.Module.name"));
+	/** The shape of the base64 hash of a class, package or method name segment */
+	private static final String HASH = "[A-Za-z0-9_$]{12,13}";
+	/** Hashes every segment of every class, package and module name */
+	private static final RuleRedactor EVERYTHING = RuleRedactor.builder().hashClassNames("(.*)").build();
 
 	@Test
 	void matching() {
@@ -422,15 +431,25 @@ class RuleRedactorTest {
 				List.of("java.lang.Class.name"));
 		StringLocation descriptor = new StringLocation("jdk.types.Symbol", "string", true,
 				List.of("jdk.types.Method.descriptor"));
+		// The matched part is hashed segment by segment, so the class keeps starting with its package
 		String hashed = redactor.redact("com/acme/secret/Foo", List.of(className));
-		assertTrue(hashed.matches("com/acme/[A-Za-z0-9_$]{12,13}"), hashed);
+		assertTrue(hashed.matches("com/acme/" + HASH + "/" + HASH), hashed);
 		assertEquals(hashed, redactor.redact("com/acme/secret/Foo", List.of(className)), "stable");
-		assertTrue(!hashed.equals(redactor.redact("com/acme/secret/Bar", List.of(className))));
-		String hash = hashed.substring("com/acme/".length());
-		assertEquals("(ILcom/acme/" + hash + ";[Ljava/lang/String;)Lcom/acme/" + hash + ";", redactor
-				.redact("(ILcom/acme/secret/Foo;[Ljava/lang/String;)Lcom/acme/secret/Foo;", List.of(descriptor)));
+		String secret = hashed.substring("com/acme/".length(), hashed.lastIndexOf('/'));
+		String foo = hashed.substring(hashed.lastIndexOf('/') + 1);
+		String bar = redactor.redact("com/acme/secret/Bar", List.of(className));
+		assertTrue(bar.startsWith("com/acme/" + secret + "/") && !bar.equals(hashed), bar);
+		assertEquals("com/acme/" + secret, redactor.redact("com/acme/secret", List.of(PACKAGE_NAME)),
+				"the package constant gets the package part of its classes");
+		assertEquals("com/acme", redactor.redact("com/acme", List.of(PACKAGE_NAME)), "an empty group is no match");
+		assertEquals("com.acme." + secret, redactor.redact("com.acme.secret", List.of(MODULE_NAME)),
+				"a module named like the package");
+		assertEquals("(ILcom/acme/" + secret + "/" + foo + ";[Ljava/lang/String;)Lcom/acme/" + secret + "/" + foo + ";",
+				redactor.redact("(ILcom/acme/secret/Foo;[Ljava/lang/String;)Lcom/acme/secret/Foo;",
+						List.of(descriptor)));
 		assertEquals("org/other/Foo", redactor.redact("org/other/Foo", List.of(className)));
 		assertEquals("com/acme/secret/Foo", redactor.redact("com/acme/secret/Foo"), "only at class name locations");
+		assertEquals("com/acme/secret", redactor.redact("com/acme/secret"), "only at package name locations");
 
 		String dump = """
 				"main" #1 prio=5 tid=0x1 nid=0x2 waiting
@@ -440,11 +459,511 @@ class RuleRedactorTest {
 				""";
 		String rewritten = redactor.redact(dump,
 				List.of(new StringLocation("jdk.ThreadDump", "result", false, List.of())));
-		assertTrue(rewritten.matches("(?s).*at com\\.acme\\." + java.util.regex.Pattern.quote(hash)
-				+ "\\.run\\([A-Za-z0-9_$]{12,13}\\.java:12\\).*"), rewritten);
+		// The file name gets the hash of the simple class name, which it is in the common case
+		assertTrue(rewritten.contains("\tat com.acme." + secret + "." + foo + ".run(" + foo + ".java:12)\n"),
+				rewritten);
 		assertTrue(!rewritten.contains("Foo.java") && !rewritten.contains("secret"), rewritten);
-		assertTrue(rewritten.contains("(a com.acme." + hash + ")"), rewritten);
-		assertTrue(rewritten.contains("at java.lang.Thread.run("), rewritten);
+		assertTrue(rewritten.contains("(a com.acme." + secret + "." + foo + ")"), rewritten);
+		assertTrue(rewritten.contains("at java.lang.Thread.run(java.base@25/Thread.java:1583)"), rewritten);
+	}
+
+	/**
+	 * The hash of a segment, which is the replacement of a class in the default package when every
+	 * class name matches
+	 */
+	private static String hash(String segment) {
+		String hashed = EVERYTHING.redact(segment, List.of(CLASS_NAME));
+		assertTrue(hashed.matches(HASH) && !hashed.equals(segment), hashed);
+		return hashed;
+	}
+
+	@Test
+	void hashesPackageSegmentsOnlyWhereTheExpressionMatchesThePackage() {
+		// A prefix expression hashes the segments after the prefix, of classes and of packages
+		RuleRedactor acme = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").build();
+		assertEquals("com/acme/" + hash("secret") + "/" + hash("Foo"),
+				acme.redact("com/acme/secret/Foo", List.of(CLASS_NAME)));
+		assertEquals("com/acme/" + hash("secret") + "/" + hash("db") + "/" + hash("Foo"),
+				acme.redact("com/acme/secret/db/Foo", List.of(CLASS_NAME)));
+		assertEquals("com/acme/" + hash("Foo"), acme.redact("com/acme/Foo", List.of(CLASS_NAME)));
+		assertEquals("com/acme/" + hash("secret"), acme.redact("com/acme/secret", List.of(PACKAGE_NAME)));
+		assertEquals("com/acme/" + hash("secret") + "/" + hash("db"),
+				acme.redact("com/acme/secret/db", List.of(PACKAGE_NAME)));
+		assertEquals("com/acme", acme.redact("com/acme", List.of(PACKAGE_NAME)));
+		assertEquals("com.acme." + hash("secret"), acme.redact("com.acme.secret", List.of(MODULE_NAME)));
+		assertEquals("org/other/Foo", acme.redact("org/other/Foo", List.of(CLASS_NAME)));
+		assertEquals("org/other", acme.redact("org/other", List.of(PACKAGE_NAME)));
+		assertEquals("Foo", acme.redact("Foo", List.of(CLASS_NAME)), "default package");
+		// Every class name: every segment
+		RuleRedactor everything = RuleRedactor.builder().hashClassNames("(.*)").build();
+		assertEquals(hash("com") + "/" + hash("acme") + "/" + hash("secret") + "/" + hash("Foo"),
+				everything.redact("com/acme/secret/Foo", List.of(CLASS_NAME)));
+		assertEquals(hash("com") + "/" + hash("acme") + "/" + hash("secret"),
+				everything.redact("com/acme/secret", List.of(PACKAGE_NAME)));
+		assertEquals(hash("java") + "." + hash("base"), everything.redact("java.base", List.of(MODULE_NAME)));
+		assertEquals(hash("Foo"), everything.redact("Foo", List.of(CLASS_NAME)), "default package");
+		// A deeper prefix keeps the segments before it
+		RuleRedactor secret = RuleRedactor.builder().hashClassNames("com\\.acme\\.secret\\.(.*)").build();
+		assertEquals("com/acme/secret/" + hash("Foo"), secret.redact("com/acme/secret/Foo", List.of(CLASS_NAME)));
+		assertEquals("com/acme/secret/" + hash("db") + "/" + hash("Foo"),
+				secret.redact("com/acme/secret/db/Foo", List.of(CLASS_NAME)));
+		assertEquals("com/acme/secret/" + hash("db"), secret.redact("com/acme/secret/db", List.of(PACKAGE_NAME)));
+		assertEquals("com/acme/secret", secret.redact("com/acme/secret", List.of(PACKAGE_NAME)));
+		assertEquals("com/acme/Foo", secret.redact("com/acme/Foo", List.of(CLASS_NAME)));
+		// A suffix expression matches no package followed by a dot, so only the simple name is hashed,
+		// and the package stays, as the recording stored it readably on its own anyway
+		RuleRedactor impl = RuleRedactor.builder().hashClassNames("(.*)Impl$").build();
+		assertEquals("com/acme/secret/" + hash("Foo") + "Impl",
+				impl.redact("com/acme/secret/FooImpl", List.of(CLASS_NAME)));
+		assertEquals("com/acme/secret", impl.redact("com/acme/secret", List.of(PACKAGE_NAME)));
+		assertEquals("com/acme/secretImpl", impl.redact("com/acme/secretImpl", List.of(PACKAGE_NAME)),
+				"the package is matched followed by a dot");
+		assertEquals("com/acme/secretImpl/" + hash("Foo") + "Impl",
+				impl.redact("com/acme/secretImpl/FooImpl", List.of(CLASS_NAME)));
+		assertEquals("com/acme/secret/Foo", impl.redact("com/acme/secret/Foo", List.of(CLASS_NAME)));
+		assertEquals(hash("Foo") + "Impl", impl.redact("FooImpl", List.of(CLASS_NAME)), "default package");
+		// A whole match without a group, which is hashed where it lies
+		RuleRedactor literal = RuleRedactor.builder().hashClassNames("Secret").build();
+		assertEquals("com/acme/" + hash("Secret") + "Service",
+				literal.redact("com/acme/SecretService", List.of(CLASS_NAME)));
+		assertEquals("com/acme/" + hash("Secret"), literal.redact("com/acme/Secret", List.of(PACKAGE_NAME)));
+		assertEquals("com/acme/" + hash("Secret") + "/SecretService",
+				literal.redact("com/acme/Secret/SecretService", List.of(CLASS_NAME)),
+				"the first match decides for the simple name, as before");
+		assertEquals("com/acme/Top" + hash("Secret"), literal.redact("com/acme/TopSecret", List.of(PACKAGE_NAME)));
+		// A match covering part of a segment hashes that part
+		RuleRedactor partial = RuleRedactor.builder().hashClassNames("com\\.ac(.*)").build();
+		assertEquals("com/ac" + hash("me") + "/" + hash("secret") + "/" + hash("Foo"),
+				partial.redact("com/acme/secret/Foo", List.of(CLASS_NAME)));
+		assertEquals("com/ac" + hash("me") + "/" + hash("secret"),
+				partial.redact("com/acme/secret", List.of(PACKAGE_NAME)));
+		assertEquals("com/ac" + hash("me"), partial.redact("com/acme", List.of(PACKAGE_NAME)));
+		// A match that only covers dots changes nothing
+		RuleRedactor dots = RuleRedactor.builder().hashClassNames("\\.").build();
+		assertEquals("com/acme/secret/Foo", dots.redact("com/acme/secret/Foo", List.of(CLASS_NAME)));
+		assertEquals("com/acme/secret", dots.redact("com/acme/secret", List.of(PACKAGE_NAME)));
+		// A group matching the package of the class hashes the package, not the simple name
+		RuleRedactor packageOnly = RuleRedactor.builder().hashClassNames("com\\.acme\\.(secret)").build();
+		assertEquals("com/acme/" + hash("secret") + "/Foo",
+				packageOnly.redact("com/acme/secret/Foo", List.of(CLASS_NAME)));
+		assertEquals("com/acme/" + hash("secret"), packageOnly.redact("com/acme/secret", List.of(PACKAGE_NAME)));
+		// Nested classes and the host of a hidden class are one segment
+		assertEquals("com/acme/" + hash("Outer$Inner"), acme.redact("com/acme/Outer$Inner", List.of(CLASS_NAME)));
+		assertEquals(hash("com") + "/" + hash("acme") + "/" + hash("Outer$Inner"),
+				everything.redact("com/acme/Outer$Inner", List.of(CLASS_NAME)));
+		assertEquals("com.acme." + hash("secret") + "." + hash("Host$$Lambda") + "/0x00007fb87c2252f8",
+				acme.redact("com.acme.secret.Host$$Lambda/0x00007fb87c2252f8", List.of(CLASS_NAME)));
+		assertEquals("com.acme." + hash("secret") + "." + hash("Host$$Lambda") + "+0x00007fb87c2252f8/262911569",
+				acme.redact("com.acme.secret.Host$$Lambda+0x00007fb87c2252f8/262911569", List.of(CLASS_NAME)));
+		assertEquals("[Lcom/acme/" + hash("secret") + "/" + hash("Host$$Lambda") + "+0x00007fb87c2252f8;",
+				acme.redact("[Lcom/acme/secret/Host$$Lambda+0x00007fb87c2252f8;", List.of(CLASS_NAME)));
+		// Arrays and descriptors, with several classes
+		assertEquals("[[Lcom/acme/" + hash("secret") + "/" + hash("Foo") + ";",
+				acme.redact("[[Lcom/acme/secret/Foo;", List.of(CLASS_NAME)));
+		assertEquals(
+				"(Lcom/acme/" + hash("secret") + "/" + hash("Foo") + ";Lorg/other/Bar;[Lcom/acme/" + hash("Baz")
+						+ ";J)Lcom/acme/" + hash("secret") + "/" + hash("db") + "/" + hash("Qux") + ";",
+				acme.redact("(Lcom/acme/secret/Foo;Lorg/other/Bar;[Lcom/acme/Baz;J)Lcom/acme/secret/db/Qux;",
+						List.of(DESCRIPTOR)));
+		assertEquals("(Lorg/other/Bar;)V", acme.redact("(Lorg/other/Bar;)V", List.of(DESCRIPTOR)));
+	}
+
+	@Test
+	void hashesPackageNameConstants() {
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").replace("*", "X").build();
+		List<StringLocation> packages = List.of(PACKAGE_NAME, new StringLocation("com.oracle.jfr.types.Symbol",
+				"string", true, List.of("com.oracle.jfr.types.Package.name")));
+		for (StringLocation location : packages) {
+			assertTrue(location.isPackageName() && !location.isClassName() && !location.isModuleName(),
+					location.toString());
+			assertEquals("com/acme/" + hash("secret") + "/" + hash("db"),
+					redactor.redact("com/acme/secret/db", List.of(location)), location.toString());
+			assertEquals("com.acme." + hash("secret") + "." + hash("db"),
+					redactor.redact("com.acme.secret.db", List.of(location)), "a dotted name keeps its form");
+			assertEquals("X", redactor.redact("org/other", List.of(location)), "an unmatched package: later rules");
+			assertEquals("X", redactor.redact("com/acme", List.of(location)), "an empty match: later rules");
+			assertEquals("X", redactor.redact("", List.of(location)), "the default package: later rules");
+		}
+		RuleRedactor everything = RuleRedactor.builder().hashClassNames("(.*)").build();
+		assertEquals("", everything.redact("", List.of(PACKAGE_NAME)), "the empty name of the default package");
+		RuleRedactor chained = RuleRedactor.builder().hashClassNames("(.*)").replace("", "<EMPTY>").build();
+		assertEquals("<EMPTY>", chained.redact("", List.of(PACKAGE_NAME)), "later rules still apply to it");
+		assertEquals(hash("java") + "/" + hash("util"), everything.redact("java/util", List.of(PACKAGE_NAME)));
+		for (StringLocation other : List.of(new StringLocation("jdk.types.Package", "name", false, List.of()),
+				new StringLocation("jdk.types.Symbol", "string", true, List.of("jdk.types.Package.module")), CLASS_NAME,
+				MODULE_NAME)) {
+			assertTrue(!other.isPackageName(), other.toString());
+		}
+		assertEquals("java/util", everything.redact("java/util", List.of(METHOD_NAME)), "not a package name");
+	}
+
+	@Test
+	void hashesModuleNameConstants() {
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").build();
+		RuleRedactor everything = RuleRedactor.builder().hashClassNames("(.*)").build();
+		RuleRedactor chained = RuleRedactor.builder().hashClassNames("(.*)").replace("", "<EMPTY>").build();
+		List<StringLocation> modules = List.of(MODULE_NAME, new StringLocation("com.oracle.jfr.types.Symbol", "string",
+				true, List.of("com.oracle.jfr.types.Module.name")));
+		for (StringLocation location : modules) {
+			assertTrue(location.isModuleName() && !location.isPackageName() && !location.isClassName(),
+					location.toString());
+			assertEquals("com.acme." + hash("secret"), redactor.redact("com.acme.secret", List.of(location)),
+					location.toString());
+			assertEquals("com/acme/" + hash("secret"), redactor.redact("com/acme/secret", List.of(location)),
+					"a slashed name keeps its form");
+			assertEquals("java.base", redactor.redact("java.base", List.of(location)));
+			assertEquals(hash("java") + "." + hash("base"), everything.redact("java.base", List.of(location)));
+			assertEquals(hash("jdk") + "." + hash("jfr"), everything.redact("jdk.jfr", List.of(location)));
+			assertEquals("", everything.redact("", List.of(location)), "the empty name of the unnamed module");
+			assertEquals("<EMPTY>", chained.redact("", List.of(location)), "later rules still apply to it");
+		}
+		// The version and location of a module are other strings, and untouched
+		for (String field : List.of("jdk.types.Module.version", "jdk.types.Module.location",
+				"com.oracle.jfr.types.Module.version", "com.oracle.jfr.types.Module.location")) {
+			StringLocation other = new StringLocation("jdk.types.Symbol", "string", true, List.of(field));
+			assertTrue(!other.isModuleName(), other.toString());
+			assertEquals("21.0.1", everything.redact("21.0.1", List.of(other)), field);
+			assertEquals("jrt:/jdk.jfr", everything.redact("jrt:/jdk.jfr", List.of(other)), field);
+		}
+		assertTrue(!new StringLocation("jdk.types.Module", "name", false, List.of()).isModuleName(), "inline");
+		assertTrue(!CLASS_NAME.isModuleName() && !PACKAGE_NAME.isModuleName() && !THREAD_NAME.isModuleName());
+	}
+
+	@Test
+	void hashesModuleSegmentsOfThreadDumpFrames() {
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").build();
+		String secret = hash("secret");
+		String dump = """
+				"main" #1 prio=5 tid=0x1 nid=0x2 waiting
+				\tat java.lang.Thread.run(java.base@21.0.1/Thread.java:1583)
+				\tat com.acme.secret.Foo.run(com.acme.secret@1.0/Foo.java:12)
+				\tat com.acme.secret.Bar.run(com.acme.secret/Bar.java:3)
+				\tat com.acme.secret.Baz.run(Baz.java:1)
+				\tat org.other.Qux.run(com.acme.secret/Qux.java:1)
+				\tat com.acme.secret.Foo.run(com.acme.secret@1.0/Native Method)
+				\tat com.acme.secret.Foo.run(Unknown Source)
+				\tat org.other.Qux.run(org.other@2/Qux.java:1)
+				""";
+		String expected = """
+				"main" #1 prio=5 tid=0x1 nid=0x2 waiting
+				\tat java.lang.Thread.run(java.base@21.0.1/Thread.java:1583)
+				\tat com.acme.%1$s.%2$s.run(com.acme.%1$s@1.0/%2$s.java:12)
+				\tat com.acme.%1$s.%3$s.run(com.acme.%1$s/%3$s.java:3)
+				\tat com.acme.%1$s.%4$s.run(%4$s.java:1)
+				\tat org.other.Qux.run(com.acme.%1$s/Qux.java:1)
+				\tat com.acme.%1$s.%2$s.run(com.acme.%1$s@1.0/Native Method)
+				\tat com.acme.%1$s.%2$s.run(Unknown Source)
+				\tat org.other.Qux.run(org.other@2/Qux.java:1)
+				""".formatted(secret, hash("Foo"), hash("Bar"), hash("Baz"));
+		for (StringLocation location : compositeLocations()) {
+			if (location.isThreadDump()) {
+				assertEquals(expected, redactor.redact(dump, List.of(location)), location.toString());
+			}
+		}
+		assertEquals("com.acme." + secret, redactor.redact("com.acme.secret", List.of(MODULE_NAME)),
+				"the module constant gets the same name as the frames");
+		RuleRedactor everything = RuleRedactor.builder().hashClassNames("(.*)").hashMethodNames("(.*)").build();
+		String frame = "\tat java.lang.Thread.run(java.base@21.0.1/Thread.java:1583)\n";
+		assertEquals(
+				"\tat " + hash("java") + "." + hash("lang") + "." + hash("Thread") + "." + hash("run") + "("
+						+ hash("java") + "." + hash("base") + "@21.0.1/" + hash("Thread") + ".java:1583)\n",
+				everything.redact(frame, List.of(THREAD_DUMP)));
+		assertEquals(hash("java") + "." + hash("base"), everything.redact("java.base", List.of(MODULE_NAME)));
+		// The module is renamed although the class of the frame is not
+		RuleRedactor base = RuleRedactor.builder().hashClassNames("java\\.(base)").build();
+		assertEquals("\tat java.lang.Thread.run(java." + hash("base") + "@21.0.1/Thread.java:1583)\n",
+				base.redact(frame, List.of(THREAD_DUMP)));
+		assertEquals("java." + hash("base"), base.redact("java.base", List.of(MODULE_NAME)));
+		assertEquals("java/lang/Thread", base.redact("java/lang/Thread", List.of(CLASS_NAME)));
+		assertEquals("java/lang", base.redact("java/lang", List.of(PACKAGE_NAME)));
+	}
+
+	@Test
+	void hashesBareSourceNamesOfFramesWithTheirClasses() {
+		// HotSpot prints the location of a frame as Foo.java:12, Foo.java, Native Method, Unknown
+		// Source, Redefined or, for a generated class, whose source is named like the class without
+		// an extension, the bare name of the class, which would reveal the hashed class. Of the bare
+		// texts only the class's own name is hashed, with the class; the others are left as they are
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").build();
+		String dump = """
+				\tat com.acme.secret.Gen.run(com.acme.secret@1/Gen)
+				\tat com.acme.secret.Gen.run(Gen)
+				\tat com.acme.secret.Gen$$Lambda/0x00007fb87c2252f8.run(Gen$$Lambda)
+				\tat com.acme.secret.Outer$Inner.run(Outer$Inner)
+				\tat com.acme.secret.Foo.run(Foo.java)
+				\tat com.acme.secret.Foo.run(Native Method)
+				\tat com.acme.secret.Foo.run(com.acme.secret@1/Unknown Source)
+				\tat com.acme.secret.Foo.run(Redefined)
+				\tat com.acme.secret.Foo.run(com.acme.secret@1/Redefined)
+				\tat com.acme.secret.Foo.run(Gen)
+				\tat com.acme.secret.Foo.run(my-file)
+				\tat org.other.Gen.run(org.other@1/Gen)
+				\tat java.lang.invoke.LambdaForm$MH/0x00007fb87c0c4800.invoke(java.base@21.0.1/LambdaForm$MH)
+				""";
+		String expected = """
+				\tat com.acme.%1$s.%2$s.run(com.acme.%1$s@1/%2$s)
+				\tat com.acme.%1$s.%2$s.run(%2$s)
+				\tat com.acme.%1$s.%3$s/0x00007fb87c2252f8.run(%3$s)
+				\tat com.acme.%1$s.%5$s.run(%5$s)
+				\tat com.acme.%1$s.%4$s.run(%4$s.java)
+				\tat com.acme.%1$s.%4$s.run(Native Method)
+				\tat com.acme.%1$s.%4$s.run(com.acme.%1$s@1/Unknown Source)
+				\tat com.acme.%1$s.%4$s.run(Redefined)
+				\tat com.acme.%1$s.%4$s.run(com.acme.%1$s@1/Redefined)
+				\tat com.acme.%1$s.%4$s.run(Gen)
+				\tat com.acme.%1$s.%4$s.run(my-file)
+				\tat org.other.Gen.run(org.other@1/Gen)
+				\tat java.lang.invoke.LambdaForm$MH/0x00007fb87c0c4800.invoke(java.base@21.0.1/LambdaForm$MH)
+				""".formatted(hash("secret"), hash("Gen"), hash("Gen$$Lambda"), hash("Foo"), hash("Outer$Inner"));
+		assertEquals(expected, redactor.redact(dump, List.of(THREAD_DUMP)));
+		// Only the bare name of the class is hashed, so the marker of a redefined class stays
+		String redefined = "\tat com.acme.secret.Foo.run(Redefined)\n\tat com.acme.secret.Foo.run(Foo.java:12)\n";
+		assertEquals(
+				"\tat %1$s.%2$s.%3$s.run(Redefined)\n\tat %1$s.%2$s.%3$s.run(%3$s.java:12)\n"
+						.formatted(hash("com") + "." + hash("acme"), hash("secret"), hash("Foo")),
+				EVERYTHING.redact(redefined, List.of(THREAD_DUMP)));
+		// When every class name is hashed, so are the names of the JDK's generated classes
+		String frame = "\tat java.lang.invoke.LambdaForm$MH/0x00007fb87c0c4800.invoke("
+				+ "java.base@21.0.1/LambdaForm$MH)\n";
+		assertEquals("\tat " + hash("java") + "." + hash("lang") + "." + hash("invoke") + "." + hash("LambdaForm$MH")
+				+ "/0x00007fb87c0c4800.invoke(" + hash("java") + "." + hash("base") + "@21.0.1/" + hash("LambdaForm$MH")
+				+ ")\n", EVERYTHING.redact(frame, List.of(THREAD_DUMP)));
+	}
+
+	@Test
+	void hashesCompilerInliningStrings() {
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").hashMethodNames("^(run)$")
+				.build();
+		for (String owner : List.of("jdk.CompilerInlining", "com.oracle.jdk.CompilerInlining")) {
+			StringLocation type = new StringLocation(owner, "callee.type", false, List.of());
+			StringLocation name = new StringLocation(owner, "callee.name", false, List.of());
+			StringLocation descriptor = new StringLocation(owner, "callee.descriptor", false, List.of());
+			StringLocation message = new StringLocation(owner, "message", false, List.of());
+			assertTrue(type.isClassName() && !type.isMethodName() && !type.isMethodDescriptor(), type.toString());
+			assertTrue(name.isMethodName() && !name.isClassName() && !name.isMethodDescriptor(), name.toString());
+			assertTrue(descriptor.isMethodDescriptor() && !descriptor.isClassName() && !descriptor.isMethodName(),
+					descriptor.toString());
+			assertTrue(!message.isClassName() && !message.isMethodName() && !message.isMethodDescriptor(),
+					message.toString());
+			assertEquals("com/acme/" + hash("secret") + "/" + hash("Foo"),
+					redactor.redact("com/acme/secret/Foo", List.of(type)), owner);
+			assertEquals(redactor.redact("com/acme/secret/Foo", List.of(CLASS_NAME)),
+					redactor.redact("com/acme/secret/Foo", List.of(type)), "the same hash as the constant");
+			assertEquals("java/lang/Object", redactor.redact("java/lang/Object", List.of(type)));
+			assertEquals(redactor.redact("run", List.of(METHOD_NAME)), redactor.redact("run", List.of(name)));
+			assertEquals("(Lcom/acme/" + hash("secret") + "/" + hash("Foo") + ";)V",
+					redactor.redact("(Lcom/acme/secret/Foo;)V", List.of(descriptor)));
+			assertEquals("com.acme.secret.Foo::run", redactor.redact("com.acme.secret.Foo::run", List.of(message)),
+					"the message is free text");
+		}
+		StringLocation constant = new StringLocation("jdk.CompilerInlining", "callee.type", true, List.of());
+		assertTrue(!constant.isClassName(), "only the inline strings of the event");
+	}
+
+	@Test
+	void keepsClassNamesStartingWithTheirPackagesInEveryForm() {
+		List<String> patterns = List.of("com\\.acme\\.(.*)", "(.*)", "(.*)Impl$", "Secret", "com\\.ac(.*)",
+				"com\\.acme\\.(secret)", "^com\\.acme\\.secret\\.FooImpl$", "com\\.acme\\.secret\\.(.*)", "秘密");
+		List<String> classes = List.of("com.acme.secret.FooImpl", "com.acme.secret.Secret", "com.acme.Secret",
+				"com.acme.secret.db.Outer$Inner", "org.other.FooImpl", "com.acme.secret.Foo$$Lambda", "FooImpl",
+				"se.hirt.秘密.秘密Impl");
+		byte[] key = {1, 2, 3};
+		// The hash of a segment with the key: the replacement of a class in the default package when
+		// everything matches
+		RuleRedactor everythingKeyed = RuleRedactor.builder().hashClassNames("(.*)", key).build();
+		UnaryOperator<String> keyedHash = text -> everythingKeyed.redact(text, List.of(CLASS_NAME));
+		for (String pattern : patterns) {
+			RuleRedactor unkeyed = RuleRedactor.builder().hashClassNames(pattern).build();
+			RuleRedactor keyed = RuleRedactor.builder().hashClassNames(pattern, key).build();
+			boolean renamed = false;
+			for (String dotted : classes) {
+				String slashed = dotted.replace('.', '/');
+				String constant = assertConsistentForms(unkeyed, RuleRedactorTest::hash, dotted);
+				String keyedConstant = assertConsistentForms(keyed, keyedHash, dotted);
+				if (constant.equals(slashed)) {
+					assertEquals(slashed, keyedConstant, pattern + " with a key");
+				} else {
+					assertTrue(!keyedConstant.equals(constant) && !keyedConstant.equals(slashed),
+							pattern + " on " + dotted + ": the key changes the hashes, " + keyedConstant);
+					renamed = true;
+				}
+			}
+			assertTrue(renamed, pattern + " renames one of the classes");
+		}
+		// Keyed hashes differ from those of another key, and are stable
+		RuleRedactor keyed = RuleRedactor.builder().hashClassNames("(.*)", key).build();
+		String hashed = keyed.redact("com/acme/secret/Foo", List.of(CLASS_NAME));
+		String otherKey = RuleRedactor.builder().hashClassNames("(.*)", new byte[] {4, 5, 6}).build()
+				.redact("com/acme/secret/Foo", List.of(CLASS_NAME));
+		assertTrue(hashed.matches(HASH + "/" + HASH + "/" + HASH + "/" + HASH), hashed);
+		assertTrue(!hashed.equals(EVERYTHING.redact("com/acme/secret/Foo", List.of(CLASS_NAME)))
+				&& !hashed.equals(otherKey), hashed);
+		assertEquals(hashed, keyed.redact("com/acme/secret/Foo", List.of(CLASS_NAME)));
+		assertEquals(hashed.substring(0, hashed.lastIndexOf('/')),
+				keyed.redact("com/acme/secret", List.of(PACKAGE_NAME)));
+	}
+
+	/**
+	 * Asserts that every form of the class gets the same replacement, which starts with the
+	 * replacement of its package, as the package and module constants get it. The file name of a
+	 * frame is hashed when the class is renamed, as before. A class in the default package has no
+	 * package and no module to check.
+	 *
+	 * @param h
+	 *            the hash of a segment, with the key of the redactor
+	 * @return the replacement of the class name constant, in internal form
+	 */
+	private static String assertConsistentForms(RuleRedactor redactor, UnaryOperator<String> h, String dotted) {
+		int dot = dotted.lastIndexOf('.');
+		String packageDotted = dot < 0 ? "" : dotted.substring(0, dot);
+		String packageSlashed = packageDotted.replace('.', '/');
+		String slashed = dotted.replace('.', '/');
+		String newPackageSlashed = redactor.redact(packageSlashed, List.of(PACKAGE_NAME));
+		String newPackageDotted = newPackageSlashed.replace('/', '.');
+		assertEquals(newPackageDotted, redactor.redact(packageDotted, List.of(MODULE_NAME)), dotted);
+		assertTrue(dot >= 0 || newPackageSlashed.isEmpty(), "the default package stays unnamed");
+		String constant = redactor.redact(slashed, List.of(CLASS_NAME));
+		String prefix = dot < 0 ? "" : newPackageSlashed + "/";
+		assertTrue(constant.startsWith(prefix), constant + " for " + dotted);
+		String simple = constant.substring(prefix.length());
+		assertTrue(!simple.isEmpty() && simple.indexOf('/') < 0, constant);
+		boolean renamed = !constant.equals(slashed);
+		String newDotted = (dot < 0 ? "" : newPackageDotted + ".") + simple;
+		assertEquals("[[L" + constant + ";", redactor.redact("[[L" + slashed + ";", List.of(CLASS_NAME)), dotted);
+		assertEquals("(L" + constant + ";[L" + constant + ";)L" + constant + ";",
+				redactor.redact("(L" + slashed + ";[L" + slashed + ";)L" + slashed + ";", List.of(DESCRIPTOR)), dotted);
+		String file = renamed ? h.apply("Foo") : "Foo";
+		// A class in the default package is in the unnamed module, which the frames do not show
+		String module = dot < 0 ? "" : packageDotted + "@1/";
+		String newModule = dot < 0 ? "" : newPackageDotted + "@1/";
+		String unversioned = dot < 0 ? "" : packageDotted + "/";
+		String newUnversioned = dot < 0 ? "" : newPackageDotted + "/";
+		String dump = "\tat " + dotted + ".run(" + module + "Foo.java:1)\n" + "\tat " + dotted
+				+ "/0x00007fb87c2252f8.run(" + unversioned + "Foo.java:2)\n" + "\t- locked <0x1> (a " + dotted + ")\n"
+				+ "\t- locked <0x2> (a [L" + dotted + ";)\n";
+		String expected = "\tat " + newDotted + ".run(" + newModule + file + ".java:1)\n" + "\tat " + newDotted
+				+ "/0x00007fb87c2252f8.run(" + newUnversioned + file + ".java:2)\n" + "\t- locked <0x1> (a " + newDotted
+				+ ")\n" + "\t- locked <0x2> (a [L" + newDotted + ";)\n";
+		assertEquals(expected, redactor.redact(dump, List.of(THREAD_DUMP)), dotted);
+		for (StringLocation description : descriptionLocations()) {
+			assertEquals("Class Name: " + newDotted, redactor.redact("Class Name: " + dotted, List.of(description)),
+					dotted);
+			assertEquals("Class Name: [L" + newDotted + ";",
+					redactor.redact("Class Name: [L" + dotted + ";", List.of(description)), dotted);
+		}
+		return constant;
+	}
+
+	/**
+	 * Several expressions form one rule, which decides each part of a name, the package or the
+	 * simple name, by the first expression covering a piece of it, so that the classes stay within
+	 * their packages whichever expression hashed their simple names, as in the common configuration
+	 * hashing the application's classes below a prefix and everything else with {@code (.*)}
+	 */
+	@Test
+	void combinesSeveralClassNameExpressionsIntoOneRuleDecidingEachPartOnce() {
+		RuleRedactor acmeThenEverything = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)")
+				.hashClassNames("(.*)").build();
+		// The simple names and the packages below com.acme by the first expression
+		assertEquals("com/acme/" + hash("secret") + "/" + hash("Foo"),
+				acmeThenEverything.redact("com/acme/secret/Foo", List.of(CLASS_NAME)));
+		assertEquals("com/acme/" + hash("secret"), acmeThenEverything.redact("com/acme/secret", List.of(PACKAGE_NAME)));
+		assertEquals("com.acme." + hash("secret"), acmeThenEverything.redact("com.acme.secret", List.of(MODULE_NAME)));
+		// Other packages, and com.acme itself, of which the first expression covers nothing, by the second
+		assertEquals(hash("org") + "/" + hash("other") + "/" + hash("Bar"),
+				acmeThenEverything.redact("org/other/Bar", List.of(CLASS_NAME)));
+		assertEquals(hash("org") + "/" + hash("other"), acmeThenEverything.redact("org/other", List.of(PACKAGE_NAME)));
+		assertEquals(hash("com") + "/" + hash("acme") + "/" + hash("Baz"),
+				acmeThenEverything.redact("com/acme/Baz", List.of(CLASS_NAME)));
+		assertEquals(hash("com") + "/" + hash("acme"), acmeThenEverything.redact("com/acme", List.of(PACKAGE_NAME)));
+		assertEquals(hash("com") + "." + hash("acme"), acmeThenEverything.redact("com.acme", List.of(MODULE_NAME)));
+		assertEquals(hash("Foo"), acmeThenEverything.redact("Foo", List.of(CLASS_NAME)), "the default package");
+		// In the other order, the first expression decides everything
+		RuleRedactor everythingThenAcme = RuleRedactor.builder().hashClassNames("(.*)")
+				.hashClassNames("com\\.acme\\.(.*)").build();
+		for (String name : List.of("com/acme/secret/Foo", "com/acme/Baz", "org/other/Bar", "Foo")) {
+			assertEquals(EVERYTHING.redact(name, List.of(CLASS_NAME)),
+					everythingThenAcme.redact(name, List.of(CLASS_NAME)), name);
+		}
+		// A literal and a prefix: the simple name by the literal, the package by the prefix
+		RuleRedactor secretThenOrg = RuleRedactor.builder().hashClassNames("Secret").hashClassNames("org\\.(.*)")
+				.build();
+		assertEquals("org/" + hash("other") + "/" + hash("Secret") + "Service",
+				secretThenOrg.redact("org/other/SecretService", List.of(CLASS_NAME)));
+		assertEquals("org/" + hash("other"), secretThenOrg.redact("org/other", List.of(PACKAGE_NAME)));
+		// A suffix and everything: the simple name keeps its suffix, and the second expression decides
+		// the packages, and the simple names the first does not reach
+		RuleRedactor implThenEverything = RuleRedactor.builder().hashClassNames("(.*)Impl$").hashClassNames("(.*)")
+				.build();
+		assertEquals(hash("com") + "/" + hash("acme") + "/" + hash("Foo") + "Impl",
+				implThenEverything.redact("com/acme/FooImpl", List.of(CLASS_NAME)));
+		assertEquals(hash("com") + "/" + hash("acme") + "/" + hash("Bar"),
+				implThenEverything.redact("com/acme/Bar", List.of(CLASS_NAME)));
+		assertEquals(hash("com") + "/" + hash("acme"), implThenEverything.redact("com/acme", List.of(PACKAGE_NAME)));
+		// The expressions are one rule, in the place of the first, so a rule added between them comes
+		// after both, and gets what no expression covers
+		RuleRedactor between = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)")
+				.replaceIf(StringLocation::isPackageName, value -> "X").hashClassNames("(.*)").build();
+		assertEquals(hash("org") + "/" + hash("other"), between.redact("org/other", List.of(PACKAGE_NAME)));
+		assertEquals("X", between.redact("", List.of(PACKAGE_NAME)), "the default package");
+		// A builder goes on without changing what it built
+		RuleRedactor.Builder builder = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)");
+		RuleRedactor acme = builder.build();
+		RuleRedactor more = builder.hashClassNames("(.*)").build();
+		assertEquals("org/other/Bar", acme.redact("org/other/Bar", List.of(CLASS_NAME)));
+		assertEquals(hash("org") + "/" + hash("other") + "/" + hash("Bar"),
+				more.redact("org/other/Bar", List.of(CLASS_NAME)));
+	}
+
+	/**
+	 * Keyed and unkeyed expressions combine like any others: each part of a name is hashed by the
+	 * expression deciding it, in every form, and the file names of frames with the simple names
+	 */
+	@Test
+	void combinesKeyedAndUnkeyedClassNameExpressionsConsistentlyInEveryForm() {
+		byte[] key = {1, 2, 3};
+		RuleRedactor everythingKeyed = RuleRedactor.builder().hashClassNames("(.*)", key).build();
+		UnaryOperator<String> k = text -> everythingKeyed.redact(text, List.of(CLASS_NAME));
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)", key).hashClassNames("(.*)")
+				.build();
+		// Below com.acme the keyed expression decides the simple names and the packages
+		assertEquals("com/acme/" + k.apply("secret") + "/" + k.apply("Foo"),
+				assertConsistentForms(redactor, k, "com.acme.secret.Foo"));
+		assertEquals("com/acme/" + k.apply("secret") + "/" + k.apply("Foo$$Lambda"),
+				assertConsistentForms(redactor, k, "com.acme.secret.Foo$$Lambda"));
+		assertEquals("com/acme/" + k.apply("secret") + "/" + k.apply("db") + "/" + k.apply("Outer$Inner"),
+				assertConsistentForms(redactor, k, "com.acme.secret.db.Outer$Inner"));
+		// The simple name of a class in com.acme itself too, while the unkeyed expression decides the
+		// package, of which the keyed one covers nothing
+		assertEquals(hash("com") + "/" + hash("acme") + "/" + k.apply("Baz"),
+				assertConsistentForms(redactor, k, "com.acme.Baz"));
+		// Elsewhere the unkeyed expression decides everything
+		assertEquals(hash("org") + "/" + hash("other") + "/" + hash("Bar"),
+				assertConsistentForms(redactor, RuleRedactorTest::hash, "org.other.Bar"));
+		assertEquals(hash("Foo"), assertConsistentForms(redactor, RuleRedactorTest::hash, "Foo"));
+		assertTrue(!k.apply("Foo").equals(hash("Foo")), "the key changes the hashes");
+	}
+
+	/**
+	 * A name stored both as a class and as a package, which javac forbids and the JVM allows, is
+	 * renamed as the package whichever location comes first, so that the classes of the package
+	 * stay within it; a prefix expression maps both alike anyway
+	 */
+	@Test
+	void renamesANameThatIsBothAClassAndAPackageAsThePackage() {
+		RuleRedactor literal = RuleRedactor.builder().hashClassNames("com\\.acme\\.secret").build();
+		String asPackage = literal.redact("com/acme/secret", List.of(PACKAGE_NAME));
+		String asClass = literal.redact("com/acme/secret", List.of(CLASS_NAME));
+		assertEquals(hash("com") + "/" + hash("acme") + "/" + hash("secret"), asPackage);
+		assertEquals("com/acme/" + hash("secret"), asClass);
+		assertEquals(asPackage, literal.redact("com/acme/secret", List.of(CLASS_NAME, PACKAGE_NAME)));
+		assertEquals(asPackage, literal.redact("com/acme/secret", List.of(PACKAGE_NAME, CLASS_NAME)));
+		assertEquals(asPackage, literal.redact("com/acme/secret", List.of(CLASS_NAME, DESCRIPTOR, MODULE_NAME)));
+		assertTrue(literal.redact("com/acme/secret/Foo", List.of(CLASS_NAME)).startsWith(asPackage + "/"),
+				"the classes of the package stay within it");
+		RuleRedactor prefix = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").build();
+		assertEquals(prefix.redact("com/acme/secret", List.of(PACKAGE_NAME)),
+				prefix.redact("com/acme/secret", List.of(CLASS_NAME)), "a prefix expression maps both alike");
 	}
 
 	@Test
@@ -473,6 +992,13 @@ class RuleRedactorTest {
 				assertEquals("[[Lorg/other/Plain;", redactor.redact("[[Lorg/other/Plain;", List.of(location)));
 			}
 		}
+		// Every segment of the component class, when every class name matches
+		RuleRedactor everything = RuleRedactor.builder().hashClassNames("(.*)").build();
+		String hashed = everything.redact(component, List.of(classLocations.get(0)));
+		assertEquals(hash("com") + "/" + hash("acme") + "/" + hash("SecretService"), hashed);
+		assertEquals("[[L" + hashed + ";", everything.redact("[[L" + component + ";", List.of(classLocations.get(0))));
+		assertEquals("([L" + hashed + ";)L" + hashed + ";",
+				everything.redact("([L" + component + ";)L" + component + ";", List.of(descriptor)));
 	}
 
 	@Test
@@ -486,6 +1012,8 @@ class RuleRedactorTest {
 				assertEquals(array, redactor.redact(array, List.of(className)));
 			}
 		}
+		assertEquals("[L" + hash("java") + "/" + hash("lang") + "/" + hash("String") + ";",
+				redactor.redact("[Ljava/lang/String;", List.of(className)), "while object arrays are hashed");
 	}
 
 	@Test
@@ -514,6 +1042,8 @@ class RuleRedactorTest {
 						.of(new StringLocation("jdk.types.Symbol", "string", true, List.of("java.lang.Class.name"))))
 				.replace('/', '.');
 		assertTrue(!component.equals(RuleRedactorTest.class.getName()));
+		assertTrue(component.startsWith(RuleRedactorTest.class.getPackageName() + "."),
+				"the anchored name does not match the package followed by a dot: " + component);
 		Path output = dir.resolve("array-output.jfr");
 		JfrRedactor.redact(input, output, redactor);
 		assertEquals(
@@ -552,6 +1082,11 @@ class RuleRedactorTest {
 				List.of(new StringLocation("vm/runtime/thread_dump", "result", false, List.of())));
 		assertTrue(rewritten.contains("." + method + "("), rewritten);
 		assertTrue(!rewritten.contains("processRecord") && !rewritten.contains("RecordService"), rewritten);
+		assertTrue(!rewritten.contains("secret"), rewritten);
+		String service = hash("RecordService");
+		assertTrue(rewritten.startsWith(
+				"\tat com.acme." + hash("secret") + "." + service + "." + method + "(" + service + ".java:42)\n"),
+				rewritten);
 		assertTrue(rewritten.contains("at java.util.ArrayList.forEach(java.base@25/ArrayList.java:1596)"), rewritten);
 	}
 
@@ -624,6 +1159,9 @@ class RuleRedactorTest {
 				.replace('/', '.');
 		String expectedMethod = redactor.redact(originalMethod,
 				List.of(new StringLocation("jdk.types.Symbol", "string", true, List.of("jdk.types.Method.name"))));
+		assertTrue(expectedClass.startsWith(秘密.class.getPackageName() + ".") && !expectedClass.equals(originalClass),
+				"the quoted name does not match the package followed by a dot, so only the simple name is hashed: "
+						+ expectedClass);
 		Path output = dir.resolve("unicode-output.jfr");
 		JfrRedactor.redact(input, output, redactor);
 		boolean sawHashedDumpFrame = false;
@@ -720,6 +1258,17 @@ class RuleRedactorTest {
 		String hashed = RuleRedactor.builder().hashClassNames("Secret[A-Za-z]*").build()
 				.redact("com/acme/SecretService$Inner", List.of(className));
 		assertTrue(hashed.matches("com/acme/[A-Za-z0-9_$]{12,13}\\$Inner"), hashed);
+		assertEquals("com/acme/" + hash("SecretService") + "$Inner", hashed);
+		// A match reaching into the package hashes the simple name only, since the package is matched
+		// on its own, followed by a dot
+		RuleRedactor acrossDot = RuleRedactor.builder().hashClassNames("acme\\.Secret").build();
+		assertEquals("com/acme/" + hash("Secret") + "Service$Inner",
+				acrossDot.redact("com/acme/SecretService$Inner", List.of(className)));
+		assertEquals("com/acme", acrossDot.redact("com/acme", List.of(PACKAGE_NAME)));
+		assertEquals("com/" + hash("acme") + "/SecretService",
+				RuleRedactor.builder().hashClassNames("acme\\.?").build().redact("com/acme/SecretService",
+						List.of(className)),
+				"the package is hashed where the expression matches it followed by a dot, the dot never");
 	}
 
 	@Test
@@ -745,7 +1294,9 @@ class RuleRedactorTest {
 				for (RecordedFrame frame : recorded.getStackTrace().getFrames()) {
 					String typeName = frame.getMethod().getType().getName();
 					if (typeName.startsWith("se.hirt.jfr.redact.")) {
-						assertTrue(typeName.matches("se\\.hirt\\.jfr\\.redact\\.[A-Za-z0-9_$]{12,13}"), typeName);
+						// The expression matches nothing of the package followed by a dot, so only the
+						// simple name is hashed
+						assertTrue(typeName.matches("se\\.hirt\\.jfr\\.redact\\." + HASH), typeName);
 						found = true;
 					}
 				}
@@ -823,7 +1374,8 @@ class RuleRedactorTest {
 		assertTrue(digitsClass.matches("acme/[A-Za-z0-9_$]{12,13}"), digitsClass);
 		assertEquals("[L" + digitsClass + ";", acme.redact("[Lacme/123;", List.of(CLASS_NAME)));
 		assertEquals("(L" + digitsClass + ";)V", acme.redact("(Lacme/123;)V", List.of(DESCRIPTOR)));
-		assertTrue(everything.redact("acme/123", List.of(CLASS_NAME)).matches("[A-Za-z0-9_$]{12,13}"));
+		assertEquals(hash("acme") + "/" + hash("123"), everything.redact("acme/123", List.of(CLASS_NAME)),
+				"segment by segment");
 		assertEquals("acme/0x1F", acme.redact("acme/0x1F", List.of(CLASS_NAME)), "the hidden class acme, unmatched");
 		assertEquals(everything.redact("acme", List.of(CLASS_NAME)) + "/0x1F",
 				everything.redact("acme/0x1F", List.of(CLASS_NAME)));
@@ -834,6 +1386,7 @@ class RuleRedactorTest {
 		assertTrue(!everything.redact("int", List.of(CLASS_NAME)).equals("int"));
 		assertEquals("int", redactor.redact("int", List.of(CLASS_NAME)));
 
+		// The bare source name HotSpot prints for the generated LambdaForm is hashed like a file name
 		String dump = """
 				"main" #1 prio=5 tid=0x1 nid=0x2 waiting
 				\tat com.acme.Host$$Lambda$269/286774984.run(Unknown Source)
@@ -848,10 +1401,11 @@ class RuleRedactorTest {
 				\tat %1$s/286774984.%6$s(Unknown Source)
 				\tat %2$s/0x0000000800c02a00.%6$s(Unknown Source)
 				\tat %3$s/0x00007fb87c2252f8.%6$s(Unknown Source)
-				\tat %4$s/0x00007fb87c0c4800.invoke(java.base@21.0.1/LambdaForm$MH)
+				\tat %4$s/0x00007fb87c0c4800.invoke(java.base@21.0.1/%8$s)
 				\tat %5$s.lambda$run$0(%7$s.java:12)
 				\tat java.lang.Thread.%6$s(java.base@21.0.1/Thread.java:1583)
-				""".formatted(lambda269, lambda14, lambda, form, host, run, host.substring("com.acme.".length()));
+				""".formatted(lambda269, lambda14, lambda, form, host, run, host.substring("com.acme.".length()),
+				form.substring("java.lang.invoke.".length()));
 		assertEquals(expected, redactor.redact(dump, List.of(THREAD_DUMP)));
 	}
 
@@ -969,10 +1523,10 @@ class RuleRedactorTest {
 				+ "\t- eliminated <owner is scalar replaced> (a java.lang.Class for java.lang.String)\n"
 				+ "\t- waiting on <0x00000004336b8a39> (a [[J)\n";
 		String string = everything.redact("java/lang/String", List.of(CLASS_NAME));
-		assertTrue(string.matches("[A-Za-z0-9_$]{12,13}"), string);
+		assertEquals(hash("java") + "/" + hash("lang") + "/" + hash("String"), string);
 		String expectedMirrors = "\t- locked <0x00000004336b8a38> (a java.lang.Class for "
 				+ everything.redact("int", List.of(CLASS_NAME)) + ")\n"
-				+ "\t- eliminated <owner is scalar replaced> (a java.lang.Class for " + string + ")\n"
+				+ "\t- eliminated <owner is scalar replaced> (a java.lang.Class for " + string.replace('/', '.') + ")\n"
 				+ "\t- waiting on <0x00000004336b8a39> (a [[J)\n";
 		assertEquals(expectedMirrors, everything.redact(mirrors, List.of(THREAD_DUMP)));
 		assertTrue(!expectedMirrors.contains("for int)"), "the constant int is hashed, so is the mirror");
@@ -987,6 +1541,8 @@ class RuleRedactorTest {
 		for (StringLocation description : descriptionLocations()) {
 			List<StringLocation> locations = List.of(description);
 			assertEquals("Class Name: " + foo, redactor.redact("Class Name: com.acme.Foo", locations));
+			assertEquals("Class Name: com.acme." + hash("secret") + "." + hash("Foo"),
+					redactor.redact("Class Name: com.acme.secret.Foo", locations), "segment by segment");
 			assertEquals("Class Name: [[L" + foo + ";", redactor.redact("Class Name: [[Lcom.acme.Foo;", locations));
 			assertEquals("Class Name: " + lambda + "/0x00007fb87c2252f8",
 					redactor.redact("Class Name: com.acme.Foo$$Lambda/0x00007fb87c2252f8", locations));

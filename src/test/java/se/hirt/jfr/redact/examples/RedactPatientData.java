@@ -39,7 +39,11 @@ import se.hirt.jfr.redact.StringRedactor;
 
 /**
  * Redacts the patient records demo application in {@code jdk9-weblogic-medrec.jfr}: hashes the
- * thread names and the application class names, and replaces e-mail addresses wherever they occur,
+ * thread names and the application class names, segment by segment below {@code com.bea.medrec}
+ * together with their packages, so that
+ * {@code com.bea.medrec.web.controller.ViewingPatientController} becomes
+ * {@code com.bea.medrec.<hash>.<hash>.<hash>} and the package {@code com.bea.medrec.web.controller}
+ * becomes {@code com.bea.medrec.<hash>.<hash>}, and replaces e-mail addresses wherever they occur,
  * such as in logged SQL statements.
  * <p>
  * Usage: {@code java -cp target/classes:target/test-classes

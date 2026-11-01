@@ -124,32 +124,59 @@ public final class StringLocation {
 	/**
 	 * @return {@code true} if this is a class name, in internal form such as
 	 *         {@code java/util/HashMap}: a constant referred to by {@code java.lang.Class.name}
-	 *         (JFR 1.0+) or {@code Class.name} (JFR 0.9)
+	 *         (JFR 1.0+) or {@code Class.name} (JFR 0.9), or the class of the inlined method of a
+	 *         {@code jdk.CompilerInlining} event ({@code com.oracle.jdk.CompilerInlining} in JDK 9
+	 *         and 10), which is written inline
 	 */
 	public boolean isClassName() {
-		return isReferredToBy("java.lang.Class.name", "Class.name");
+		return isReferredToBy("java.lang.Class.name", "Class.name") || isCompilerInliningCallee("callee.type");
 	}
 
 	/**
-	 * @return {@code true} if this is a method descriptor, such as {@code (Ljava/util/List;)V}
+	 * @return {@code true} if this is a method descriptor, such as {@code (Ljava/util/List;)V}, as
+	 *         a constant or inline in the callee of a {@code jdk.CompilerInlining} event
 	 */
 	public boolean isMethodDescriptor() {
 		return isReferredToBy("jdk.types.Method.descriptor", "com.oracle.jfr.types.Method.descriptor",
-				"Method.signature");
+				"Method.signature") || isCompilerInliningCallee("callee.descriptor");
 	}
 
 	/**
-	 * @return {@code true} if this is a method name
+	 * @return {@code true} if this is a method name, as a constant or inline in the callee of a
+	 *         {@code jdk.CompilerInlining} event
 	 */
 	public boolean isMethodName() {
-		return isReferredToBy("jdk.types.Method.name", "com.oracle.jfr.types.Method.name", "Method.name");
+		return isReferredToBy("jdk.types.Method.name", "com.oracle.jfr.types.Method.name", "Method.name")
+				|| isCompilerInliningCallee("callee.name");
 	}
 
 	/**
-	 * @return {@code true} if this is a package name, in internal form such as {@code java/util}
+	 * @return {@code true} if this is a package name, in internal form such as {@code java/util}: a
+	 *         constant referred to by {@code jdk.types.Package.name} (JDK 11+) or
+	 *         {@code com.oracle.jfr.types.Package.name} (JDK 9 and 10). JFR 0.9 stores no package
+	 *         names. The default package is named by the empty string.
 	 */
 	public boolean isPackageName() {
 		return isReferredToBy("jdk.types.Package.name", "com.oracle.jfr.types.Package.name");
+	}
+
+	/**
+	 * @return {@code true} if this is a module name, in source form such as {@code java.base}: a
+	 *         constant referred to by {@code jdk.types.Module.name} (JDK 11+) or
+	 *         {@code com.oracle.jfr.types.Module.name} (JDK 9 and 10). The version and location of
+	 *         a module, {@code 21.0.1} and {@code jrt:/java.base}, are other strings.
+	 */
+	public boolean isModuleName() {
+		return isReferredToBy("jdk.types.Module.name", "com.oracle.jfr.types.Module.name");
+	}
+
+	/**
+	 * True if this is the field of the inlined method of a {@code jdk.CompilerInlining} event,
+	 * whose class name, method name and descriptor are written inline, not as constants
+	 */
+	private boolean isCompilerInliningCallee(String calleeField) {
+		return !constant && field.equals(calleeField)
+				&& (owner.equals("jdk.CompilerInlining") || owner.equals("com.oracle.jdk.CompilerInlining"));
 	}
 
 	private boolean isReferredToBy(String ... fields) {

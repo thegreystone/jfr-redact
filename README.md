@@ -78,14 +78,40 @@ and are left alone unless they are also thread names. The empty name of an unnam
 name and is left to later rules. Names stored through the `java.lang.String` constant pool, as JDK Mission Control's
 `flightrecorder.writer` does, are recognized by the thread or thread group field referring to them.
 
-`--hash-class-names` replaces class names as constants, in array class names and method descriptors, in the frames
-and lock objects of thread dumps (`(a X)`, `(object ..., a X)`, `(a java.lang.Class for X)` and
-`Class initialization monitor for X`) and in the `Class Name:` of old-object descriptions. Primitive arrays are
-unchanged. A hidden class such as `com.acme.Foo$$Lambda/0x00007fb87c2252f8` is hashed by its host class,
-`com.acme.Foo$$Lambda`, and keeps the address or identity hash the JVM appends in each run, so its frames and its
-class constant get the same hash, and from JDK 21 on the same hash in every run (JDK 8 to 20 number their lambda
-proxy classes per run, as in `Foo$$Lambda$269` and `Foo$$Lambda$14`). Package names are not class names and are not
-affected. `--hash-method-names` also rewrites the frames of thread dumps.
+`--hash-class-names` replaces the part of class names matching a regular expression with a hash, segment by segment:
+as constants, in array class names and method descriptors, in the frames of thread dumps together with their source
+file names and the bare class names HotSpot prints as the location of generated classes, in the lock objects of
+thread dumps (`(a X)`, `(object ..., a X)`, `(a java.lang.Class for X)` and `Class initialization monitor for X`), in
+the `Class Name:` of old-object descriptions and in the inline class names and descriptors of `jdk.CompilerInlining`
+events. Dots are never replaced, and the package of a class is hashed as a package name: the expression is matched
+against the package name followed by a dot, as it appears in the class name, and the matched segments are hashed
+wherever the package is stored, in the `jdk.types.Package` constants, in the package part of class names and
+descriptors, in the `jdk.types.Module` names and in the module segment of thread dump frames (`java.base@21/`). So
+every class name still starts with the name of its package, which JDK Mission Control relies on to derive simple
+class names. With `com\.acme\.(.*)`, `com.acme.secret.Foo` becomes `com.acme.<hash>.<hash>` and its package
+`com.acme.secret` becomes `com.acme.<hash>`; with `(.*)` every segment of every class, package and module name is
+hashed; with `(.*)Impl$` only the simple name is hashed, `com.acme.secret.<hash>Impl`, and the package stays, since
+the expression does not match it (the recording stored it readably on its own anyway). Prefix expressions such as
+`com\.acme\.(.*)` or `(.*)` are the way to hide packages. Only the first match of an expression counts, so a literal
+found in the package before the simple name, as `Secret` in `com.acme.Secret.SecretService`, leaves the simple name
+alone; an expression anchored to the end of the name, such as `Secret[^.]*$`, hashes the simple name instead. Two kinds
+of expression change nothing: one whose group covers package segments only while the rest of it requires the simple
+name, as in `(com\.acme)\.secret\.Foo`, since the package is matched on its own, and one anchored to the end of a
+package name, as in `(secret)$`, since the package is followed by a dot; end it with the dot instead, as in
+`(secret)\.`. Several expressions form one rule, in the place of the first, and for each part of a name, the package or
+the simple name, the first expression covering a piece of it decides, so that the package part of a class, the constant
+of its package and the name of its module always agree: with `com\.acme\.(.*)` followed by `(.*)`, `com.acme.secret.Foo`
+becomes `com.acme.<hash>.<hash>` and `org.other.Bar` becomes `<hash>.<hash>.<hash>`. Since segments are hashed one by
+one, a
+short and common segment such as `impl` or `util` is easy to guess from its unkeyed hash, which is the same in every
+package it occurs in; the library's `hashClassNames(regex, key)` hashes with a secret key, which the command line does
+not offer yet. Primitive arrays are unchanged. A hidden class such as
+`com.acme.Foo$$Lambda/0x00007fb87c2252f8` is hashed by its host class, `com.acme.Foo$$Lambda`, and keeps the address
+or identity hash the JVM appends in each run, so its frames and its class constant get the same hash, and from JDK 21
+on the same hash in every run (JDK 8 to 20 number their lambda proxy classes per run, as in `Foo$$Lambda$269` and
+`Foo$$Lambda$14`). Module locations (`jrt:/jdk.jfr`), JVM arguments, exception messages and other free text naming
+classes or packages are not touched. `--hash-method-names` also rewrites the frames of thread dumps and the inline
+method names of `jdk.CompilerInlining` events.
 
 Strings are decoded according to their recording encoding, preserving UTF-16 code units, including unpaired
 surrogates in char-array values. Replacements containing unpaired surrogates use JFR's char-array encoding where
@@ -96,7 +122,11 @@ surrogates as `\uXXXX` to preserve them in UTF-8 text.
 jfr-redact redact --match <regex> [--match <regex>]... [--replacement <text>] <recording.jfr> <redacted.jfr>
 ```
 
-`RedactionVerifier` in the test sources redacts any recording aggressively and verifies the result independently.
+`RedactionVerifier` in the test sources redacts any recording aggressively and verifies the result independently. Its
+`checkClassPackageInvariant` checks that every class name of a recording starts with the name of its package, which
+`--hash-class-names` keeps and the aggressive redaction does not; `FixtureTest` runs it on the redacted test
+recordings, and `JmcCompatibilityTest` loads them with JDK Mission Control's parser (`org.openjdk.jmc:flightrecorder`,
+a test dependency), which relies on that.
 
 ## Test recordings
 
