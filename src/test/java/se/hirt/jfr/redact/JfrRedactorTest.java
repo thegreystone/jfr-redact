@@ -121,8 +121,9 @@ class JfrRedactorTest {
 		assertEquals(List.of(), problems);
 	}
 
+	/** A method name is the value of {@code jdk.types.Method.name}, through its symbol */
 	@Test
-	void identifiesMethodNamesByReferrer(@TempDir
+	void identifiesMethodNamesByTheirField(@TempDir
 	Path dir) throws Exception {
 		Path input = record(dir.resolve("input.jfr"));
 		List<String> methodNames = new ArrayList<>();

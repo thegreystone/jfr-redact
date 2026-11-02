@@ -78,7 +78,6 @@ public final class JfrRedactor {
 		List<String> changedReplacements = new ArrayList<>();
 		boolean[] changed = new boolean[strings.size()];
 		Set<String> changedEventTypes = new HashSet<>();
-		Set<String> changedPoolTypes = new HashSet<>();
 		List<String> redactedInMetadata = new ArrayList<>();
 		long redactedCount = 0;
 		for (int entry = 0; entry < strings.size(); entry++) {
@@ -91,12 +90,12 @@ public final class JfrRedactor {
 				changedReplacements.add(replacement);
 				changed[entry] = true;
 				redactedCount++;
+				// The checkpoints to rewrite are known from the strings each stores, see the
+				// collector; the event types from the inline locations of the redacted strings
 				for (StringLocation location : locations.get(entry)) {
 					if (location == StringLocation.METADATA) {
 						redactedInMetadata.add(value);
-					} else if (location.isConstant()) {
-						changedPoolTypes.add(location.getOwner());
-					} else {
+					} else if (!location.isConstant()) {
 						changedEventTypes.add(location.getOwner());
 					}
 				}
@@ -110,7 +109,7 @@ public final class JfrRedactor {
 				result = new RedactionResult(strings.size(), 0, collector.getChunkCount(), 0, 0, 0, 0, List.of());
 			} else {
 				ChunkRewriter rewriter = new ChunkRewriter(changedStrings, changedReplacements.toArray(new String[0]),
-						collector.getChangedCheckpoints(changed), changedEventTypes, changedPoolTypes);
+						collector.getChangedCheckpoints(changed), changedEventTypes);
 				try (FileChannel in = FileChannel.open(input, StandardOpenOption.READ);
 						FileChannel out = FileChannel.open(temporary.path, StandardOpenOption.WRITE)) {
 					rewriter.rewrite(in, out);

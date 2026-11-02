@@ -57,19 +57,30 @@ import se.hirt.jfr.redact.scan.StringScanner;
 import se.hirt.jfr.redact.parser.StreamingChunkParser;
 
 class RuleRedactorTest {
-	private static final StringLocation CLASS_NAME = new StringLocation("jdk.types.Symbol", "string", true,
-			List.of("java.lang.Class.name"));
-	private static final StringLocation METHOD_NAME = new StringLocation("jdk.types.Symbol", "string", true,
-			List.of("jdk.types.Method.name"));
-	private static final StringLocation DESCRIPTOR = new StringLocation("jdk.types.Symbol", "string", true,
-			List.of("jdk.types.Method.descriptor"));
+	/**
+	 * The names as HotSpot's recordings locate them: at the field whose value they are, without
+	 * referrers, since a class, a method, a package or a module stores no string itself, see
+	 * {@link StringLocation#getReferrers()}
+	 */
+	private static final StringLocation CLASS_NAME = new StringLocation("java.lang.Class", "name", true, List.of());
+	private static final StringLocation METHOD_NAME = new StringLocation("jdk.types.Method", "name", true, List.of());
+	private static final StringLocation DESCRIPTOR = new StringLocation("jdk.types.Method", "descriptor", true,
+			List.of());
 	private static final StringLocation THREAD_NAME = new StringLocation("java.lang.Thread", "javaName", true,
 			List.of());
 	private static final StringLocation THREAD_DUMP = new StringLocation("jdk.ThreadDump", "result", false, List.of());
-	private static final StringLocation PACKAGE_NAME = new StringLocation("jdk.types.Symbol", "string", true,
-			List.of("jdk.types.Package.name"));
-	private static final StringLocation MODULE_NAME = new StringLocation("jdk.types.Symbol", "string", true,
-			List.of("jdk.types.Module.name"));
+	private static final StringLocation PACKAGE_NAME = new StringLocation("jdk.types.Package", "name", true, List.of());
+	private static final StringLocation MODULE_NAME = new StringLocation("jdk.types.Module", "name", true, List.of());
+	/**
+	 * The JFR 0.9 names: JRockit's interned strings, located at the storing constant with the
+	 * referring field, since its metadata declares no simple types
+	 */
+	private static final StringLocation LEGACY_CLASS_NAME = new StringLocation("UTFConstant", "utf8", true,
+			List.of("Class.name"));
+	private static final StringLocation LEGACY_METHOD_NAME = new StringLocation("UTFConstant", "utf8", true,
+			List.of("Method.name"));
+	private static final StringLocation LEGACY_DESCRIPTOR = new StringLocation("UTFConstant", "utf8", true,
+			List.of("Method.signature"));
 	/** The shape of the base64 hash of a class, package or method name segment */
 	private static final String HASH = "[A-Za-z0-9_$]{12,13}";
 	/** Hashes every segment of every class, package and module name */
@@ -427,10 +438,8 @@ class RuleRedactorTest {
 	@Test
 	void hashesClassNames() {
 		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").build();
-		StringLocation className = new StringLocation("jdk.types.Symbol", "string", true,
-				List.of("java.lang.Class.name"));
-		StringLocation descriptor = new StringLocation("jdk.types.Symbol", "string", true,
-				List.of("jdk.types.Method.descriptor"));
+		StringLocation className = CLASS_NAME;
+		StringLocation descriptor = DESCRIPTOR;
 		// The matched part is hashed segment by segment, so the class keeps starting with its package
 		String hashed = redactor.redact("com/acme/secret/Foo", List.of(className));
 		assertTrue(hashed.matches("com/acme/" + HASH + "/" + HASH), hashed);
@@ -465,6 +474,78 @@ class RuleRedactorTest {
 		assertTrue(!rewritten.contains("Foo.java") && !rewritten.contains("secret"), rewritten);
 		assertTrue(rewritten.contains("(a com.acme." + secret + "." + foo + ")"), rewritten);
 		assertTrue(rewritten.contains("at java.lang.Thread.run(java.base@25/Thread.java:1583)"), rewritten);
+	}
+
+	/**
+	 * A name is classified by the field whose value it is, as a constant: the name of a class, a
+	 * method, a package or a module at the field of its own constant, wherever the writer stored
+	 * the value, inline in that constant, through a simple type such as {@code jdk.types.Symbol},
+	 * or through the string pool, since every reader reads a simple type as the value of the field
+	 * referring to it. JRockit declares no simple types, so its JFR 0.9 names keep their storing
+	 * constant, {@code UTFConstant}, with the referring field. Referrers play no part: HotSpot's
+	 * classes have none, a class storing its name inline, which other constants refer to, has them,
+	 * and both are class names. Other fields of the same types, an inline value, and the simple
+	 * types themselves, whatever refers to them, are not names.
+	 */
+	@Test
+	void classifiesNamesByTheFieldWhoseValueTheyAre() {
+		for (String types : List.of("jdk.types.", "com.oracle.jfr.types.")) {
+			assertOnlyClassName(new StringLocation("java.lang.Class", "name", true, List.of(types + "Method.type")));
+			assertOnlyClassName(new StringLocation("java.lang.Class", "name", true, List.of()));
+			assertOnlyMethodName(new StringLocation(types + "Method", "name", true, List.of()));
+			assertOnlyDescriptor(new StringLocation(types + "Method", "descriptor", true, List.of()));
+			StringLocation packageName = new StringLocation(types + "Package", "name", true,
+					List.of("java.lang.Class.package"));
+			assertTrue(
+					packageName.isPackageName() && !packageName.isClassName() && !packageName.isModuleName()
+							&& !packageName.isMethodName() && !packageName.isMethodDescriptor(),
+					packageName.toString());
+			StringLocation moduleName = new StringLocation(types + "Module", "name", true, List.of());
+			assertTrue(moduleName.isModuleName() && !moduleName.isPackageName() && !moduleName.isClassName()
+					&& !moduleName.isMethodName() && !moduleName.isMethodDescriptor(), moduleName.toString());
+		}
+		for (String callee : List.of("jdk.CompilerInlining", "com.oracle.jdk.CompilerInlining")) {
+			assertOnlyClassName(new StringLocation(callee, "callee.type", false, List.of()));
+			assertOnlyMethodName(new StringLocation(callee, "callee.name", false, List.of()));
+			assertOnlyDescriptor(new StringLocation(callee, "callee.descriptor", false, List.of()));
+			StringLocation message = new StringLocation(callee, "message", false, List.of());
+			assertTrue(!message.isClassName() && !message.isMethodName() && !message.isMethodDescriptor(),
+					message.toString());
+		}
+		assertOnlyClassName(LEGACY_CLASS_NAME);
+		assertOnlyMethodName(LEGACY_METHOD_NAME);
+		assertOnlyDescriptor(LEGACY_DESCRIPTOR);
+		for (StringLocation other : List.of(new StringLocation("java.lang.Class", "package", true, List.of()),
+				new StringLocation("java.lang.Class", "name", false, List.of()),
+				new StringLocation("jdk.types.Method", "name", false, List.of()),
+				new StringLocation("jdk.types.Method", "type", true, List.of()),
+				new StringLocation("jdk.types.Package", "module", true, List.of()),
+				new StringLocation("jdk.types.Module", "version", true, List.of()),
+				new StringLocation("jdk.types.Symbol", "string", true, List.of("java.lang.Class.name")),
+				new StringLocation("jdk.types.Symbol", "string", true,
+						List.of("jdk.types.Method.descriptor", "jdk.types.Method.name", "jdk.types.Module.name",
+								"jdk.types.Package.name")),
+				new StringLocation("jdk.types.Symbol", "string", true, List.of()),
+				new StringLocation("java.lang.String", "value", true, List.of("java.lang.Class.name")),
+				new StringLocation("UTFConstant", "utf8", true, List.of()))) {
+			assertTrue(!other.isClassName() && !other.isMethodName() && !other.isMethodDescriptor()
+					&& !other.isPackageName() && !other.isModuleName(), other.toString());
+		}
+	}
+
+	private static void assertOnlyClassName(StringLocation location) {
+		assertTrue(location.isClassName() && !location.isMethodName() && !location.isMethodDescriptor()
+				&& !location.isPackageName() && !location.isModuleName(), location.toString());
+	}
+
+	private static void assertOnlyMethodName(StringLocation location) {
+		assertTrue(location.isMethodName() && !location.isClassName() && !location.isMethodDescriptor()
+				&& !location.isPackageName() && !location.isModuleName(), location.toString());
+	}
+
+	private static void assertOnlyDescriptor(StringLocation location) {
+		assertTrue(location.isMethodDescriptor() && !location.isClassName() && !location.isMethodName()
+				&& !location.isPackageName() && !location.isModuleName(), location.toString());
 	}
 
 	/**
@@ -571,8 +652,8 @@ class RuleRedactorTest {
 	@Test
 	void hashesPackageNameConstants() {
 		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").replace("*", "X").build();
-		List<StringLocation> packages = List.of(PACKAGE_NAME, new StringLocation("com.oracle.jfr.types.Symbol",
-				"string", true, List.of("com.oracle.jfr.types.Package.name")));
+		List<StringLocation> packages = List.of(PACKAGE_NAME,
+				new StringLocation("com.oracle.jfr.types.Package", "name", true, List.of()));
 		for (StringLocation location : packages) {
 			assertTrue(location.isPackageName() && !location.isClassName() && !location.isModuleName(),
 					location.toString());
@@ -590,7 +671,8 @@ class RuleRedactorTest {
 		assertEquals("<EMPTY>", chained.redact("", List.of(PACKAGE_NAME)), "later rules still apply to it");
 		assertEquals(hash("java") + "/" + hash("util"), everything.redact("java/util", List.of(PACKAGE_NAME)));
 		for (StringLocation other : List.of(new StringLocation("jdk.types.Package", "name", false, List.of()),
-				new StringLocation("jdk.types.Symbol", "string", true, List.of("jdk.types.Package.module")), CLASS_NAME,
+				new StringLocation("jdk.types.Package", "module", true, List.of()),
+				new StringLocation("jdk.types.Symbol", "string", true, List.of("jdk.types.Package.name")), CLASS_NAME,
 				MODULE_NAME)) {
 			assertTrue(!other.isPackageName(), other.toString());
 		}
@@ -602,8 +684,8 @@ class RuleRedactorTest {
 		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").build();
 		RuleRedactor everything = RuleRedactor.builder().hashClassNames("(.*)").build();
 		RuleRedactor chained = RuleRedactor.builder().hashClassNames("(.*)").replace("", "<EMPTY>").build();
-		List<StringLocation> modules = List.of(MODULE_NAME, new StringLocation("com.oracle.jfr.types.Symbol", "string",
-				true, List.of("com.oracle.jfr.types.Module.name")));
+		List<StringLocation> modules = List.of(MODULE_NAME,
+				new StringLocation("com.oracle.jfr.types.Module", "name", true, List.of()));
 		for (StringLocation location : modules) {
 			assertTrue(location.isModuleName() && !location.isPackageName() && !location.isClassName(),
 					location.toString());
@@ -618,12 +700,13 @@ class RuleRedactorTest {
 			assertEquals("<EMPTY>", chained.redact("", List.of(location)), "later rules still apply to it");
 		}
 		// The version and location of a module are other strings, and untouched
-		for (String field : List.of("jdk.types.Module.version", "jdk.types.Module.location",
-				"com.oracle.jfr.types.Module.version", "com.oracle.jfr.types.Module.location")) {
-			StringLocation other = new StringLocation("jdk.types.Symbol", "string", true, List.of(field));
+		for (StringLocation other : List.of(new StringLocation("jdk.types.Module", "version", true, List.of()),
+				new StringLocation("jdk.types.Module", "location", true, List.of()),
+				new StringLocation("com.oracle.jfr.types.Module", "version", true, List.of()),
+				new StringLocation("com.oracle.jfr.types.Module", "location", true, List.of()))) {
 			assertTrue(!other.isModuleName(), other.toString());
-			assertEquals("21.0.1", everything.redact("21.0.1", List.of(other)), field);
-			assertEquals("jrt:/jdk.jfr", everything.redact("jrt:/jdk.jfr", List.of(other)), field);
+			assertEquals("21.0.1", everything.redact("21.0.1", List.of(other)), other.toString());
+			assertEquals("jrt:/jdk.jfr", everything.redact("jrt:/jdk.jfr", List.of(other)), other.toString());
 		}
 		assertTrue(!new StringLocation("jdk.types.Module", "name", false, List.of()).isModuleName(), "inline");
 		assertTrue(!CLASS_NAME.isModuleName() && !PACKAGE_NAME.isModuleName() && !THREAD_NAME.isModuleName());
@@ -972,11 +1055,8 @@ class RuleRedactorTest {
 				RuleRedactor.builder().hashClassNames("^com\\.acme\\.SecretService$").build(),
 				RuleRedactor.builder().hashClassNames("com\\.acme\\.(Secret)").build(),
 				RuleRedactor.builder().hashClassNames("^com\\.acme\\.(SecretService)$", new byte[] {1, 2, 3}).build());
-		List<StringLocation> classLocations = List.of(
-				new StringLocation("jdk.types.Symbol", "string", true, List.of("java.lang.Class.name")),
-				new StringLocation("Symbol", "string", true, List.of("Class.name")));
-		StringLocation descriptor = new StringLocation("jdk.types.Symbol", "string", true,
-				List.of("jdk.types.Method.descriptor"));
+		List<StringLocation> classLocations = List.of(CLASS_NAME, LEGACY_CLASS_NAME);
+		StringLocation descriptor = DESCRIPTOR;
 		String component = "com/acme/SecretService";
 		for (RuleRedactor redactor : redactors) {
 			for (StringLocation location : classLocations) {
@@ -1004,8 +1084,7 @@ class RuleRedactorTest {
 	@Test
 	void keepsPrimitiveArrayClassesEvenWhenEveryClassNameMatches() {
 		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("(.*)").build();
-		StringLocation className = new StringLocation("jdk.types.Symbol", "string", true,
-				List.of("java.lang.Class.name"));
+		StringLocation className = CLASS_NAME;
 		for (String type : List.of("B", "C", "D", "F", "I", "J", "S", "Z")) {
 			for (String dimensions : List.of("[", "[[")) {
 				String array = dimensions + type;
@@ -1037,9 +1116,7 @@ class RuleRedactorTest {
 				"the input must contain the component and every tested array class");
 		RuleRedactor redactor = RuleRedactor.builder()
 				.hashClassNames("^" + Pattern.quote(RuleRedactorTest.class.getName()) + "$").build();
-		String component = redactor
-				.redact(RuleRedactorTest.class.getName().replace('.', '/'), List
-						.of(new StringLocation("jdk.types.Symbol", "string", true, List.of("java.lang.Class.name"))))
+		String component = redactor.redact(RuleRedactorTest.class.getName().replace('.', '/'), List.of(CLASS_NAME))
 				.replace('/', '.');
 		assertTrue(!component.equals(RuleRedactorTest.class.getName()));
 		assertTrue(component.startsWith(RuleRedactorTest.class.getPackageName() + "."),
@@ -1061,8 +1138,7 @@ class RuleRedactorTest {
 	@Test
 	void hashesMethodNames() {
 		RuleRedactor redactor = RuleRedactor.builder().hashMethodNames("(processRecord)").build();
-		StringLocation methodName = new StringLocation("jdk.types.Symbol", "string", true,
-				List.of("jdk.types.Method.name"));
+		StringLocation methodName = METHOD_NAME;
 		String hashed = redactor.redact("processRecord", List.of(methodName));
 		assertTrue(hashed.matches("[A-Za-z0-9_$]{12,13}"), hashed);
 		assertEquals("lambda$" + hashed + "$0", redactor.redact("lambda$processRecord$0", List.of(methodName)));
@@ -1074,8 +1150,7 @@ class RuleRedactorTest {
 	void hashesClassAndMethodNamesInThreadDumps() {
 		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)")
 				.hashMethodNames("(processRecord)").build();
-		String method = redactor.redact("processRecord",
-				List.of(new StringLocation("Symbol", "string", true, List.of("Method.name"))));
+		String method = redactor.redact("processRecord", List.of(LEGACY_METHOD_NAME));
 		String dump = "\tat com.acme.secret.RecordService.processRecord(RecordService.java:42)\n"
 				+ "\tat java.util.ArrayList.forEach(java.base@25/ArrayList.java:1596)\n";
 		String rewritten = redactor.redact(dump,
@@ -1095,10 +1170,8 @@ class RuleRedactorTest {
 		String[][] identifiers = {{"秘密", "処理", "秘密"}, {"Outer$秘密", "lambda$処理$0", "秘密"}, {"€Secret", "€処理", "€Secret"},
 				{"Cafe\u0301", "me\u0301thod", "Cafe\u0301"},
 				{"\uD801\uDC00Secret", "\uD801\uDC01run", "\uD801\uDC00Secret"}};
-		StringLocation className = new StringLocation("jdk.types.Symbol", "string", true,
-				List.of("java.lang.Class.name"));
-		StringLocation methodName = new StringLocation("jdk.types.Symbol", "string", true,
-				List.of("jdk.types.Method.name"));
+		StringLocation className = CLASS_NAME;
+		StringLocation methodName = METHOD_NAME;
 		for (String[] names : identifiers) {
 			RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)")
 					.hashMethodNames(Pattern.quote(names[1])).build();
@@ -1153,12 +1226,8 @@ class RuleRedactorTest {
 				"the input must genuinely contain the Unicode frame");
 		RuleRedactor redactor = RuleRedactor.builder().hashClassNames(Pattern.quote(originalClass))
 				.hashMethodNames(Pattern.quote(originalMethod)).build();
-		String expectedClass = redactor
-				.redact(originalClass.replace('.', '/'), List
-						.of(new StringLocation("jdk.types.Symbol", "string", true, List.of("java.lang.Class.name"))))
-				.replace('/', '.');
-		String expectedMethod = redactor.redact(originalMethod,
-				List.of(new StringLocation("jdk.types.Symbol", "string", true, List.of("jdk.types.Method.name"))));
+		String expectedClass = redactor.redact(originalClass.replace('.', '/'), List.of(CLASS_NAME)).replace('/', '.');
+		String expectedMethod = redactor.redact(originalMethod, List.of(METHOD_NAME));
 		assertTrue(expectedClass.startsWith(秘密.class.getPackageName() + ".") && !expectedClass.equals(originalClass),
 				"the quoted name does not match the package followed by a dot, so only the simple name is hashed: "
 						+ expectedClass);
@@ -1254,7 +1323,7 @@ class RuleRedactorTest {
 
 	@Test
 	void hashesWholeMatchWithoutGroup() {
-		StringLocation className = new StringLocation("Symbol", "string", true, List.of("Class.name"));
+		StringLocation className = LEGACY_CLASS_NAME;
 		String hashed = RuleRedactor.builder().hashClassNames("Secret[A-Za-z]*").build()
 				.redact("com/acme/SecretService$Inner", List.of(className));
 		assertTrue(hashed.matches("com/acme/[A-Za-z0-9_$]{12,13}\\$Inner"), hashed);
@@ -1627,9 +1696,7 @@ class RuleRedactorTest {
 		List<StringLocation> groups = List.of(new StringLocation("jdk.types.ThreadGroup", "name", true, List.of()),
 				new StringLocation("com.oracle.jfr.types.ThreadGroup", "name", true, List.of()),
 				new StringLocation("ThreadGroup", "name", true, List.of()),
-				new StringLocation("java.lang.String", "value", true, List.of("jdk.types.ThreadGroup.name")),
-				new StringLocation("java.lang.String", "value", true,
-						List.of("com.oracle.jfr.types.ThreadGroup.name")));
+				new StringLocation("jdk.types.ThreadGroup", "name", true, List.of("java.lang.Thread.group")));
 		String name = "Thread Group for Queue: 'weblogic.socket.Muxer'";
 		String hashed = redactor.redact(name, List.of(groups.get(0)));
 		assertTrue(hashed.matches("ThreadGroup-[0-9a-f]{8}"), hashed);
@@ -1641,8 +1708,13 @@ class RuleRedactorTest {
 			assertEquals(thread, redactor.redact(name, List.of(group, THREAD_NAME)), "a thread name wins");
 			assertEquals(thread, redactor.redact(name, List.of(THREAD_NAME, group)), "a thread name wins");
 		}
+		// A location in the string pool names nothing: the pool is the location only of entries no
+		// field refers to, so one with referrers, as a name stored through the pool had before it
+		// was located at its field, is not a group name either
 		for (StringLocation other : List.of(new StringLocation("jdk.types.ThreadGroup", "name", false, List.of()),
 				new StringLocation("jdk.types.ThreadGroup", "parent", true, List.of()),
+				new StringLocation("java.lang.String", "value", true, List.of()),
+				new StringLocation("java.lang.String", "value", true, List.of("jdk.types.ThreadGroup.name")),
 				new StringLocation("java.lang.String", "value", true, List.of("jdk.types.ThreadGroup.parent")),
 				CLASS_NAME)) {
 			assertTrue(!other.isThreadGroupName(), other.toString());
@@ -1667,20 +1739,52 @@ class RuleRedactorTest {
 		assertTrue(keyed.matches("ThreadGroup-[0-9a-f]{8}") && !keyed.equals(hashed), keyed);
 	}
 
+	/**
+	 * A name the writer stored through the string pool is located at the thread or thread group
+	 * field like an inline one, so the rule needs no notion of the pool, and a location in the pool
+	 * itself, which only entries no field refers to have, names nothing, whatever referrers it
+	 * carries
+	 */
 	@Test
-	void hashesThreadNamesStoredThroughTheStringPool() {
+	void hashesThreadNamesWhereverTheWriterStoredThem() {
 		RuleRedactor redactor = RuleRedactor.builder().hashThreadNames().build();
 		String expected = redactor.redact("SecretWorker-0", List.of(THREAD_NAME));
-		for (String referrer : List.of("java.lang.Thread.javaName", "java.lang.Thread.osName", "Thread.name")) {
-			StringLocation pooled = new StringLocation("java.lang.String", "value", true, List.of(referrer));
-			assertTrue(pooled.isThreadName(), pooled.toString());
-			assertEquals(expected, redactor.redact("SecretWorker-0", List.of(pooled)), pooled.toString());
+		for (StringLocation name : List.of(new StringLocation("java.lang.Thread", "osName", true, List.of()),
+				new StringLocation("Thread", "name", true, List.of()))) {
+			assertTrue(name.isThreadName(), name.toString());
+			assertEquals(expected, redactor.redact("SecretWorker-0", List.of(name)), name.toString());
 		}
-		StringLocation symbol = new StringLocation("java.lang.String", "value", true,
-				List.of("jdk.types.Symbol.string"));
-		assertTrue(!symbol.isThreadName());
-		assertEquals("SecretWorker-0", redactor.redact("SecretWorker-0", List.of(symbol)));
+		for (List<String> referrers : List.of(List.<String> of(), List.of("java.lang.Thread.javaName"),
+				List.of("java.lang.Thread.osName"), List.of("Thread.name"), List.of("jdk.types.ThreadGroup.name"),
+				List.of("com.oracle.jfr.types.ThreadGroup.name"))) {
+			StringLocation pool = new StringLocation("java.lang.String", "value", true, referrers);
+			assertTrue(!pool.isThreadName() && !pool.isThreadGroupName(), pool.toString());
+			assertEquals("SecretWorker-0", redactor.redact("SecretWorker-0", List.of(pool)), pool.toString());
+		}
 		assertTrue(!new StringLocation("java.lang.Thread", "javaName", false, List.of()).isThreadName(), "inline");
+	}
+
+	/**
+	 * A dump is identified by its owner and field wherever the writer stored it, inline in the
+	 * event as HotSpot does or through the string pool as JMC's writer would, and is rewritten the
+	 * same way; a location in the pool itself is not a dump
+	 */
+	@Test
+	void identifiesThreadDumpsWhereverTheWriterStoredThem() {
+		String dump = "\"worker\" daemon prio=6 tid=0x000000000ebd4000 nid=0x1578 waiting on condition\n";
+		RuleRedactor redactor = RuleRedactor.builder().hashThreadNames().build();
+		String inline = redactor.redact(dump, List.of(THREAD_DUMP));
+		assertTrue(!inline.contains("\"worker\""), inline);
+		for (boolean constant : new boolean[] {false, true}) {
+			for (String owner : List.of("jdk.ThreadDump", "vm/runtime/thread_dump")) {
+				StringLocation result = new StringLocation(owner, "result", constant, List.of());
+				assertTrue(result.isThreadDump() && result.isComposite(), result.toString());
+				assertEquals(inline, redactor.redact(dump, List.of(result)), result.toString());
+			}
+			assertTrue(!new StringLocation("jdk.ThreadDump", "startTime", constant, List.of()).isThreadDump());
+		}
+		StringLocation pool = new StringLocation("java.lang.String", "value", true, List.of("jdk.ThreadDump.result"));
+		assertTrue(!pool.isThreadDump() && !pool.isComposite(), pool.toString());
 	}
 
 	/** The class name hashed by the redactor, in source form as it appears in thread dumps */

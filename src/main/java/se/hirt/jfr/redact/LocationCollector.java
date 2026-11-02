@@ -48,10 +48,50 @@ import se.hirt.jfr.redact.scan.StringScanner;
 /**
  * First redaction pass: collects every distinct string with all the locations it is stored at.
  * Rejects undeclared event types and malformed values encountered while collecting strings. Event
- * payloads without inline strings are skipped; their constants are collected separately.
+ * payloads without inline strings or references to folding constants are skipped; their constants
+ * are collected separately.
+ * <p>
+ * A string is located at the field whose value it is. For a string inlined in an event or in the
+ * constant of an entity, a constant pool type read as an object, that is the field storing it, and
+ * for a constant the fields of other constants referring to the constant are its referrers. A
+ * constant of a folding type, see {@link ChunkTypes.Type#folds}, is read by every reader as its one
+ * value: the {@code java.lang.String} pool's entries, referred to through the encoding of a string
+ * or, declared with a constant pool, with a key, and the constants of the types the metadata
+ * declares simple, such as {@code jdk.types.Symbol} and {@code jdk.types.FrameType}. Its value is a
+ * value of the fields referring to it, from events and from constants, and is located at those
+ * fields, as an inline value of theirs would be, with the referrers of the constant holding the
+ * field, through chains of folding constants. The references are kept as links on the folding
+ * constant and resolved once the chunk is complete, see {@link #onChunkEnd()}; only a folding
+ * constant no field of its chunk refers to is located at its own field, and a constant referred to
+ * in one chunk and in none of another is located both ways.
+ * <p>
+ * The referrers of a constant are recorded only when its type stores strings itself, inline in its
+ * constants, see {@link ChunkTypes.Type#containsStrings}: a reference to such a constant is a
+ * referrer, and the constants of every other type, of {@code java.lang.Class},
+ * {@code jdk.types.Method}, {@code jdk.types.Package}, {@code jdk.types.Module},
+ * {@code jdk.types.ClassLoader} and {@code jdk.types.StackTrace} among HotSpot's, whose strings are
+ * all folded from the symbols and pool entries they refer to, have none, however many constants
+ * refer to them. Tracking those would mean decoding and deduplicating the method of every frame of
+ * every stack trace, the bulk of a profiling recording's constants, for referrers no rule consumes,
+ * so the key of such a reference is skipped, see {@link ChunkTypes.Type#locationFields}. The
+ * constants of a chunk are tracked, in {@link ConstantTable records} holding their strings,
+ * referrers and links, when they store strings or fold; a link from a field of a constant that is
+ * not tracked carries no source, like a link from the field of an event, and resolves to the field
+ * without referrers. The frames of the stack traces cost a cache lookup per frame type, see
+ * {@link #isRecent}.
  */
 final class LocationCollector implements ChunkParserListener {
 	private static final String NO_FIELD = "value";
+	/**
+	 * The source of a link from the field of an event, or of a constant that is not tracked, which
+	 * has no referrers and no record
+	 */
+	private static final int NO_SOURCE = -1;
+	/**
+	 * The recent references, a direct-mapped cache by pool, key and field, see {@link #isRecent}
+	 */
+	private static final int RECENT_BITS = 10;
+	private static final long GOLDEN = 0x9E3779B97F4A7C15L;
 
 	private final StringCountMap strings = new StringCountMap();
 	private final StringDecoder decoder = new StringDecoder();
@@ -68,13 +108,34 @@ final class LocationCollector implements ChunkParserListener {
 	/** Referrer sets, id 0 being the empty set */
 	private final Map<List<String>, Integer> referrerSetIds = new HashMap<>();
 	private final List<List<String>> referrerSets = new ArrayList<>();
+	/** Referrer set ids of single referrers, by field location, -1 until computed */
+	private int[] singleReferrerSets = new int[256];
 
-	/** Locations: field location and referrer set */
-	private final Map<Long, Integer> locationIds = new HashMap<>();
+	/**
+	 * Locations: field location and referrer set. Looked up once per inline string of a constant
+	 * and once per run of links resolving to the same field and referrer set, so without boxing.
+	 */
+	private final LongIntMap locationIds = new LongIntMap();
 	private final List<StringLocation> locations = new ArrayList<>();
+	/** The location of the field and referrer set last resolved, see {@link #pairStrings} */
+	private int resolvedField = -1;
+	private int resolvedReferrerSet = -1;
+	private int resolvedLocation = -1;
+	/**
+	 * The chain of folding constants being followed while resolving the links of a constant, see
+	 * {@link #locateThroughLinks}: the records, and per record the next link to follow
+	 */
+	private int[] chainRecords = new int[16];
+	private int[] chainPositions = new int[16];
+	/**
+	 * Numbers the resolutions of the chunk, marking the records followed in the current one, so
+	 * that a constant reached twice is followed once and a cycle, should a recording manage one,
+	 * ends
+	 */
+	private int resolution;
 
 	/** Distinct (string entry, location id) pairs */
-	private final LongSet pairs = new LongSet();
+	private final LongSet pairs = new LongSet(1 << 14);
 	private final Set<String> metadataStrings = new HashSet<>();
 	private int longestMetadataString;
 
@@ -86,7 +147,7 @@ final class LocationCollector implements ChunkParserListener {
 
 	/**
 	 * Per chunk: struct nesting contexts, each an owner, path prefix and constant flag, with per
-	 * field caches of the child contexts and field locations (-1 until computed)
+	 * field caches of the child contexts and field locations (-1 until computed).
 	 */
 	private final List<String> contextOwners = new ArrayList<>();
 	private final List<String> contextPaths = new ArrayList<>();
@@ -94,30 +155,71 @@ final class LocationCollector implements ChunkParserListener {
 	private final List<int[]> contextChildren = new ArrayList<>();
 	/** Index 0 is for constants without fields, see {@link #fieldLocation(int, Type, int)} */
 	private final List<int[]> contextFieldLocations = new ArrayList<>();
+	/**
+	 * Per event context and field, the location of a value of the field read from a constant, of
+	 * the string pool or of another folding type, -1 until computed, see
+	 * {@link #constantValueLocation(int, Type, int)}; null until the context's first reference to a
+	 * folding constant, which most contexts never make, and always for the contexts of constants,
+	 * whose field locations are constant already
+	 */
+	private final List<int[]> contextConstantValueLocations = new ArrayList<>();
 	private int[] rootContexts;
 
 	/**
-	 * Per chunk: the strings of each constant, and the fields of other constants referring to it
+	 * Per chunk: the strings of each tracked constant, the fields of other constants referring to
+	 * it and, for a folding constant, the links from the fields whose value it is
 	 */
 	private final ConstantTable constants = new ConstantTable();
+	/** The record of the constant being read, or null for one that is not tracked */
 	private ConstantRecord currentConstant;
-	/** Recently added references, to skip repeated ones, cleared per chunk */
-	private final long[] recentKeys = new long[256];
-	private final int[] recentPools = new int[256];
-	private final int[] recentSources = new int[256];
-	/** Referrer set ids of single referrers, by field location, -1 until computed */
-	private int[] singleReferrerSets = new int[256];
+	/**
+	 * The references seen recently, by pool, key and field, cleared per chunk: a repeated reference
+	 * from an event, or from a constant that is not tracked, to a folding constant adds no link,
+	 * and a repeated reference to an entity no referrer, so most references of a profiling
+	 * recording, every frame of its stack traces referring to one of a few frame types, cost this
+	 * lookup. Each slot holds the key and then the pool and field packed into one long, plus one so
+	 * that 0 is empty, side by side in one cache line.
+	 */
+	private final long[] recent = new long[2 << RECENT_BITS];
 
+	/**
+	 * A tracked constant of the chunk: its strings with the fields holding them, the fields of
+	 * other constants referring to it and, for a folding constant, the links from the fields whose
+	 * value it is, see {@link LocationCollector#onChunkEnd()}
+	 */
 	private static final class ConstantRecord {
+		/** The index of the record in the table, by which the links name their sources */
+		int index;
 		int[] entries = new int[2];
 		int[] fieldLocations = new int[2];
 		int count;
 		int[] referrers = new int[1];
 		int referrerCount;
+		/** The id of the set of referrers, -1 until computed at chunk end */
+		int referrerSet = -1;
+		/**
+		 * The links to a folding constant: the fields whose value it is, from events and from
+		 * constants, and the records of the constants holding those fields, {@link #NO_SOURCE} for
+		 * an event or a constant that is not tracked. Null until the first link, as most constants
+		 * are entities, which no link reaches.
+		 */
+		int[] linkFields;
+		int[] linkSources;
+		int linkCount;
+		/** The location the strings were last paired with while resolving the links */
+		int lastLocation = -1;
+		/**
+		 * The resolution the links of this record were last followed in, see {@link #resolution}
+		 */
+		int visited;
 
 		void reset() {
 			count = 0;
 			referrerCount = 0;
+			referrerSet = -1;
+			linkCount = 0;
+			lastLocation = -1;
+			visited = 0;
 		}
 
 		void add(int entry, int fieldLocation) {
@@ -141,59 +243,111 @@ final class LocationCollector implements ChunkParserListener {
 			}
 			referrers[referrerCount++] = fieldLocation;
 		}
+
+		/**
+		 * A link from a field of a constant whose value this constant is. Only a repeat of the last
+		 * link is skipped, which catches the elements of an array referring to the constant from
+		 * the same field of the same source, such as the frames of a stack trace sharing a frame
+		 * type, even when frames of another type come between, since those link to another
+		 * constant: a repeat among the others resolves to the same location, which the pairs store
+		 * once.
+		 */
+		void addLink(int fieldLocation, int source) {
+			if (linkCount > 0 && linkSources[linkCount - 1] == source && linkFields[linkCount - 1] == fieldLocation) {
+				return;
+			}
+			appendLink(fieldLocation, source);
+		}
+
+		/**
+		 * A link from a field without a source, of an event or of a constant that is not tracked,
+		 * which {@link LocationCollector#isRecent} mostly skips as a repeat: the few that reach the
+		 * record are deduplicated exactly, so that a recording cannot grow the links by repeating
+		 * references from a few fields, by a scan, since such links are few per constant
+		 */
+		void addFieldLink(int fieldLocation) {
+			for (int i = 0; i < linkCount; i++) {
+				if (linkFields[i] == fieldLocation && linkSources[i] == NO_SOURCE) {
+					return;
+				}
+			}
+			appendLink(fieldLocation, NO_SOURCE);
+		}
+
+		private void appendLink(int fieldLocation, int source) {
+			if (linkFields == null) {
+				linkFields = new int[2];
+				linkSources = new int[2];
+			} else if (linkCount == linkFields.length) {
+				linkFields = Arrays.copyOf(linkFields, linkCount * 2);
+				linkSources = Arrays.copyOf(linkSources, linkCount * 2);
+			}
+			linkFields[linkCount] = fieldLocation;
+			linkSources[linkCount] = source;
+			linkCount++;
+		}
 	}
 
-	/** Open addressing map from (pool, key) to reusable constant records */
+	/**
+	 * Open addressing map from (pool, key) to reusable constant records, numbered from 0 in the
+	 * order they are first seen in. The slots hold the keys and, packed into one long, the pool and
+	 * the number plus one, 0 being empty, so that a lookup reads two arrays, both the ones every
+	 * reference to a constant touches.
+	 */
 	private static final class ConstantTable {
-		private int[] slots = new int[1 << 12];
-		private int mask = slots.length - 1;
+		private long[] slotKeys = new long[1 << 12];
+		private long[] slotEntries = new long[1 << 12];
+		private int mask = slotKeys.length - 1;
 		private int size;
-		private int[] pools = new int[1 << 11];
-		private long[] keys = new long[1 << 11];
 		private ConstantRecord[] records = new ConstantRecord[1 << 11];
 
 		ConstantRecord get(int pool, long key) {
 			int hash = hash(pool, key);
 			for (int slot = hash & mask;; slot = (slot + 1) & mask) {
-				int entry = slots[slot] - 1;
-				if (entry < 0) {
+				long stored = slotEntries[slot];
+				if (stored == 0) {
 					return insert(pool, key, slot);
 				}
-				if (keys[entry] == key && pools[entry] == pool) {
-					return records[entry];
+				if (slotKeys[slot] == key && (int) (stored >>> 32) == pool) {
+					return records[(int) stored - 1];
 				}
 			}
 		}
 
 		private ConstantRecord insert(int pool, long key, int slot) {
 			int entry = size++;
-			if (entry == keys.length) {
-				pools = Arrays.copyOf(pools, entry * 2);
-				keys = Arrays.copyOf(keys, entry * 2);
+			if (entry == records.length) {
 				records = Arrays.copyOf(records, entry * 2);
 			}
-			pools[entry] = pool;
-			keys[entry] = key;
-			if (records[entry] == null) {
-				records[entry] = new ConstantRecord();
+			ConstantRecord record = records[entry];
+			if (record == null) {
+				record = new ConstantRecord();
+				records[entry] = record;
 			} else {
-				records[entry].reset();
+				record.reset();
 			}
-			slots[slot] = entry + 1;
-			if (size * 2 > slots.length) {
-				int[] newSlots = new int[slots.length * 2];
-				int newMask = newSlots.length - 1;
-				for (int e = 0; e < size; e++) {
-					int s = hash(pools[e], keys[e]) & newMask;
-					while (newSlots[s] != 0) {
-						s = (s + 1) & newMask;
+			record.index = entry;
+			slotKeys[slot] = key;
+			slotEntries[slot] = packed(pool, entry);
+			if (size * 2 > slotKeys.length) {
+				long[] oldKeys = slotKeys;
+				long[] oldEntries = slotEntries;
+				slotKeys = new long[oldKeys.length * 2];
+				slotEntries = new long[oldEntries.length * 2];
+				mask = slotKeys.length - 1;
+				for (int s = 0; s < oldEntries.length; s++) {
+					long stored = oldEntries[s];
+					if (stored != 0) {
+						int moved = hash((int) (stored >>> 32), oldKeys[s]) & mask;
+						while (slotEntries[moved] != 0) {
+							moved = (moved + 1) & mask;
+						}
+						slotKeys[moved] = oldKeys[s];
+						slotEntries[moved] = stored;
 					}
-					newSlots[s] = e + 1;
 				}
-				slots = newSlots;
-				mask = newMask;
 			}
-			return records[entry];
+			return record;
 		}
 
 		int size() {
@@ -205,21 +359,29 @@ final class LocationCollector implements ChunkParserListener {
 		}
 
 		void clear() {
-			Arrays.fill(slots, 0);
+			Arrays.fill(slotEntries, 0);
 			size = 0;
 		}
 
+		private static long packed(int pool, int entry) {
+			return ((long) pool << 32) | (entry + 1);
+		}
+
 		private static int hash(int pool, long key) {
-			long h = (key ^ ((long) pool << 48)) * 0x9E3779B97F4A7C15L;
+			long h = (key ^ ((long) pool << 48)) * GOLDEN;
 			return (int) (h ^ (h >>> 29) ^ (h >>> 47));
 		}
 	}
 
 	/** Open addressing set of longs */
 	private static final class LongSet {
-		private long[] slots = new long[1 << 14];
+		private long[] slots;
 		private boolean containsMinusOne;
 		private int size;
+
+		LongSet(int capacity) {
+			slots = new long[capacity];
+		}
 
 		/** Stored as value + 1, so that 0 means empty */
 		void add(long value) {
@@ -229,7 +391,7 @@ final class LocationCollector implements ChunkParserListener {
 			}
 			long stored = value + 1;
 			int mask = slots.length - 1;
-			long h = stored * 0x9E3779B97F4A7C15L;
+			long h = stored * GOLDEN;
 			for (int slot = (int) (h ^ (h >>> 32)) & mask;; slot = (slot + 1) & mask) {
 				if (slots[slot] == stored) {
 					return;
@@ -264,6 +426,58 @@ final class LocationCollector implements ChunkParserListener {
 			if (containsMinusOne) {
 				consumer.accept(-1);
 			}
+		}
+	}
+
+	/** Open addressing map from non-negative longs to non-negative ints */
+	private static final class LongIntMap {
+		private long[] keys = new long[1 << 10];
+		private int[] values = new int[1 << 10];
+		private int size;
+
+		/**
+		 * @return the value of the key, or -1 if absent. Keys are stored as key + 1, so that 0
+		 *         means empty.
+		 */
+		int get(long key) {
+			long stored = key + 1;
+			int mask = keys.length - 1;
+			long h = stored * GOLDEN;
+			for (int slot = (int) (h ^ (h >>> 32)) & mask;; slot = (slot + 1) & mask) {
+				if (keys[slot] == stored) {
+					return values[slot];
+				}
+				if (keys[slot] == 0) {
+					return -1;
+				}
+			}
+		}
+
+		/** Adds the key, which must be absent */
+		void put(long key, int value) {
+			if (++size * 2 > keys.length) {
+				long[] oldKeys = keys;
+				int[] oldValues = values;
+				keys = new long[oldKeys.length * 2];
+				values = new int[oldValues.length * 2];
+				for (int i = 0; i < oldKeys.length; i++) {
+					if (oldKeys[i] != 0) {
+						insert(oldKeys[i], oldValues[i]);
+					}
+				}
+			}
+			insert(key + 1, value);
+		}
+
+		private void insert(long stored, int value) {
+			int mask = keys.length - 1;
+			long h = stored * GOLDEN;
+			int slot = (int) (h ^ (h >>> 32)) & mask;
+			while (keys[slot] != 0) {
+				slot = (slot + 1) & mask;
+			}
+			keys[slot] = stored;
+			values[slot] = value;
 		}
 	}
 
@@ -349,6 +563,7 @@ final class LocationCollector implements ChunkParserListener {
 		contextConstant.clear();
 		contextChildren.clear();
 		contextFieldLocations.clear();
+		contextConstantValueLocations.clear();
 		rootContexts = new int[types.size() * 2];
 		Arrays.fill(rootContexts, -1);
 	}
@@ -359,7 +574,7 @@ final class LocationCollector implements ChunkParserListener {
 		if (type == null) {
 			throw new IOException("Event of undeclared type " + typeId + ", cannot guarantee a complete redaction");
 		}
-		if (!type.containsStrings) {
+		if (!type.containsStrings && !type.containsFoldingReferences) {
 			return;
 		}
 		int end = stream.position() + payloadSize;
@@ -396,49 +611,153 @@ final class LocationCollector implements ChunkParserListener {
 		}
 	}
 
+	/**
+	 * Pairs the strings of the chunk's constants with their locations, which are only complete now:
+	 * the referrers of a constant, and the links to a folding constant from the fields whose value
+	 * it is, which may arrive before or after the constant, since the string pool usually comes
+	 * last, in the checkpoint ending the chunk, but first in a chunk with flushes. The strings of
+	 * an entity are located at their fields with the entity's referrers; those of a folding
+	 * constant are located through its links, see {@link #locateThroughLinks}, or at its own field
+	 * when nothing links to it. A key referred to without a constant in the chunk, a dangling one,
+	 * has no strings and locates nothing.
+	 */
 	@Override
 	public void onChunkEnd() {
 		for (int c = 0; c < constants.size(); c++) {
 			ConstantRecord constant = constants.record(c);
 			if (constant.count == 0) {
-				continue;
+				continue; // No strings: an entity storing none, a link of a chain, or a dangling key
 			}
-			int referrerSet = referrerSetId(constant);
-			for (int i = 0; i < constant.count; i++) {
-				addPair(constant.entries[i], locationId(constant.fieldLocations[i], referrerSet));
+			if (constant.linkCount > 0) {
+				locateThroughLinks(constant); // Only folding constants are linked to
+			} else {
+				int referrerSet = referrerSetId(constant);
+				for (int i = 0; i < constant.count; i++) {
+					addPair(constant.entries[i], locationId(constant.fieldLocations[i], referrerSet));
+				}
 			}
 		}
 		constants.clear();
-		Arrays.fill(recentKeys, 0);
+		resolution = 0;
+		Arrays.fill(recent, 0);
 	}
 
-	private void readConstants(RecordingStream stream, Type type, int count) throws IOException {
-		int context = rootContext(type, true);
-		for (int i = 0; i < count; i++) {
-			long key = readKey(stream, type.keyKind);
-			if (type.containsStrings) {
-				currentConstant = constants.get(type.index, key);
+	/**
+	 * Pairs the strings of a folding constant with the locations its links lead to: a link without
+	 * a source locates the strings at the field, as a constant, without referrers; a link from an
+	 * entity at the entity's field, with the entity's referrers; a link from another folding
+	 * constant continues through that constant's links, and ends at its own field, the linking one,
+	 * when it has none. The links follow the hierarchy of the folding types, see
+	 * {@link ChunkTypes.Type#folds}, two or three deep, and the aliases of the string pool, entries
+	 * referring to other entries, which chain to any depth, so the chain is kept on a stack of its
+	 * own rather than the call stack. A folding constant reached twice in one resolution, through
+	 * two of its referrers, is followed once, which also ends a cycle, should a recording manage to
+	 * link one: the aliases of the pool cannot, as an entry holding a string refers to nothing.
+	 */
+	private void locateThroughLinks(ConstantRecord constant) {
+		int stamp = ++resolution;
+		constant.visited = stamp;
+		ConstantRecord linked = constant; // The record whose links are being followed
+		int l = 0; // The next of its links
+		int depth = -1; // The records followed on the way to it, and where to resume each
+		while (true) {
+			if (l == linked.linkCount) {
+				if (depth < 0) {
+					return;
+				}
+				linked = constants.record(chainRecords[depth]);
+				l = chainPositions[depth--];
+				continue;
 			}
-			if (type.isString) {
-				readConstantString(stream, ChunkTypes.KIND_STRING, context, -1, type);
-			} else {
-				walkConstant(stream, type, context);
+			int source = linked.linkSources[l];
+			int fieldLocation = linked.linkFields[l++];
+			int referrerSet = 0;
+			if (source != NO_SOURCE) {
+				ConstantRecord holder = constants.record(source);
+				if (holder.linkCount > 0) {
+					if (holder.visited != stamp) {
+						holder.visited = stamp;
+						if (++depth == chainRecords.length) {
+							chainRecords = Arrays.copyOf(chainRecords, depth * 2);
+							chainPositions = Arrays.copyOf(chainPositions, depth * 2);
+						}
+						chainRecords[depth] = linked.index;
+						chainPositions[depth] = l;
+						linked = holder;
+						l = 0;
+					}
+					continue;
+				}
+				referrerSet = referrerSetId(holder);
 			}
-			currentConstant = null;
+			pairStrings(constant, fieldLocation, referrerSet);
 		}
 	}
 
+	/**
+	 * Pairs the strings of the constant with the location once per run of the same field and
+	 * referrer set, which the links of a constant mostly are, as the hundreds of methods referring
+	 * to the symbol of a common name, and once per location of the constant
+	 */
+	private void pairStrings(ConstantRecord constant, int fieldLocation, int referrerSet) {
+		if (fieldLocation != resolvedField || referrerSet != resolvedReferrerSet) {
+			resolvedField = fieldLocation;
+			resolvedReferrerSet = referrerSet;
+			resolvedLocation = locationId(fieldLocation, referrerSet);
+		}
+		if (constant.lastLocation != resolvedLocation) {
+			constant.lastLocation = resolvedLocation;
+			for (int i = 0; i < constant.count; i++) {
+				addPair(constant.entries[i], resolvedLocation);
+			}
+		}
+	}
+
+	/**
+	 * The constants of the types that store strings, so that they may have referrers, and of the
+	 * types that fold, so that links reach them, are tracked; the others are only walked for their
+	 * references, which need no record of theirs: a referrer is the field, and a link from a
+	 * constant that is not tracked, which has no referrers, resolves like a link from an event
+	 */
+	private void readConstants(RecordingStream stream, Type type, int count) throws IOException {
+		int context = rootContext(type, true);
+		int[] fieldLocations = contextFieldLocations.get(context);
+		boolean tracked = type.containsStrings || type.folds;
+		for (int i = 0; i < count; i++) {
+			long key = readKey(stream, type.keyKind);
+			currentConstant = tracked ? constants.get(type.index, key) : null;
+			if (type.isString) {
+				readConstantString(stream, ChunkTypes.KIND_STRING, context, -1, type, fieldLocations);
+			} else {
+				walkConstant(stream, type, context, fieldLocations);
+			}
+		}
+		currentConstant = null;
+	}
+
+	/**
+	 * Walks the program with the references to folding constants, whose values are values of the
+	 * referring fields, only for the types that have any: the walk of every other type stays as it
+	 * is
+	 */
 	private void walkEvent(RecordingStream stream, Type type, int context) throws IOException {
-		int[] fields = type.fields;
+		int[] fields = type.containsFoldingReferences ? type.locationFields : type.fields;
 		for (int i = 0; i < fields.length; i++) {
 			int op = fields[i];
 			if ((op & ChunkTypes.ARRAY_FLAG) == 0) {
 				readEventValue(stream, op, type, i, context);
 			} else {
 				int length = legacy ? stream.readRawInt() : (int) stream.readVarint();
-				int fixedSize = ChunkTypes.fixedSize(op & ChunkTypes.KIND_MASK);
+				int kind = op & ChunkTypes.KIND_MASK;
+				int fixedSize = ChunkTypes.fixedSize(kind);
 				if (fixedSize > 0) {
 					stream.skip(length * fixedSize);
+				} else if (kind == ChunkTypes.KIND_STRUCT) {
+					Type struct = types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT);
+					int child = childContext(context, type, i);
+					for (int j = 0; j < length; j++) {
+						walkEvent(stream, struct, child);
+					}
 				} else {
 					for (int j = 0; j < length; j++) {
 						readEventValue(stream, op, type, i, context);
@@ -457,9 +776,22 @@ final class LocationCollector implements ChunkParserListener {
 		case ChunkTypes.KIND_FIXED8 -> stream.skip(8);
 		case ChunkTypes.KIND_VARINT -> stream.skipVarint();
 		case ChunkTypes.KIND_STRING, ChunkTypes.KIND_UTF8, ChunkTypes.KIND_UTF16 -> {
-			if (decoder.read(stream, kind) == StringDecoder.STRING) {
+			int result = decoder.read(stream, kind);
+			if (result == StringDecoder.STRING) {
 				int entry = strings.add(decoder.array, decoder.offset, decoder.length, StringScanner.INLINE);
 				addPair(entry, locationId(fieldLocation(context, type, field), 0));
+			} else if (result == StringDecoder.REFERENCE && types.stringTypeIndex >= 0) {
+				addLink(types.stringTypeIndex, decoder.reference, constantValueLocation(context, type, field), null);
+			}
+		}
+		case ChunkTypes.KIND_REF -> {
+			// The value of a folding constant, a key into the string pool or a simple type such as the
+			// state of a sample, is a value of the field, see walkEvent. A reference to an entity is
+			// not a location of its strings, see StringLocation.getReferrers()
+			Type pool = types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT);
+			long key = readKey(stream, pool.keyKind);
+			if (pool.folds) {
+				addLink(pool.index, key, constantValueLocation(context, type, field), null);
 			}
 		}
 		case ChunkTypes.KIND_STRUCT -> {
@@ -470,28 +802,42 @@ final class LocationCollector implements ChunkParserListener {
 		}
 	}
 
-	private void walkConstant(RecordingStream stream, Type type, int context) throws IOException {
-		int[] fields = type.referenceFields;
+	/**
+	 * @param fieldLocations
+	 *            the field locations of the context, see {@link #fieldLocation(int, Type, int)},
+	 *            looked up once per constant and per array of structs, as every frame of a stack
+	 *            trace refers to a method and a frame type
+	 */
+	private void walkConstant(RecordingStream stream, Type type, int context, int[] fieldLocations) throws IOException {
+		int[] fields = type.locationFields;
 		for (int i = 0; i < fields.length; i++) {
 			int op = fields[i];
 			if ((op & ChunkTypes.ARRAY_FLAG) == 0) {
-				readConstantValue(stream, op, type, i, context);
+				readConstantValue(stream, op, type, i, context, fieldLocations);
 			} else {
 				int length = legacy ? stream.readRawInt() : (int) stream.readVarint();
-				int fixedSize = ChunkTypes.fixedSize(op & ChunkTypes.KIND_MASK);
+				int kind = op & ChunkTypes.KIND_MASK;
+				int fixedSize = ChunkTypes.fixedSize(kind);
 				if (fixedSize > 0) {
 					stream.skip(length * fixedSize);
+				} else if (kind == ChunkTypes.KIND_STRUCT) {
+					Type struct = types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT);
+					int child = childContext(context, type, i);
+					int[] childLocations = contextFieldLocations.get(child);
+					for (int j = 0; j < length; j++) {
+						walkConstant(stream, struct, child, childLocations);
+					}
 				} else {
 					for (int j = 0; j < length; j++) {
-						readConstantValue(stream, op, type, i, context);
+						readConstantValue(stream, op, type, i, context, fieldLocations);
 					}
 				}
 			}
 		}
 	}
 
-	private void readConstantValue(RecordingStream stream, int op, Type type, int field, int context)
-			throws IOException {
+	private void readConstantValue(
+		RecordingStream stream, int op, Type type, int field, int context, int[] fieldLocations) throws IOException {
 		int kind = op & ChunkTypes.KIND_MASK;
 		switch (kind) {
 		case ChunkTypes.KIND_FIXED1 -> stream.skip(1);
@@ -500,47 +846,113 @@ final class LocationCollector implements ChunkParserListener {
 		case ChunkTypes.KIND_FIXED8 -> stream.skip(8);
 		case ChunkTypes.KIND_VARINT -> stream.skipVarint();
 		case ChunkTypes.KIND_STRING, ChunkTypes.KIND_UTF8, ChunkTypes.KIND_UTF16 ->
-			readConstantString(stream, kind, context, field, type);
+			readConstantString(stream, kind, context, field, type, fieldLocations);
 		case ChunkTypes.KIND_REF -> {
 			Type pool = types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT);
-			addReference(pool.index, readKey(stream, pool.keyKind), fieldLocation(context, type, field));
+			long key = readKey(stream, pool.keyKind);
+			int location = fieldLocations[field + 1];
+			if (location < 0) {
+				location = fieldLocation(context, type, field);
+			}
+			if (pool.folds) {
+				// The value of a folding constant is a value of the field: a link, see addLink
+				addLink(pool.index, key, location, currentConstant);
+			} else {
+				addReference(pool.index, key, location);
+			}
 		}
 		case ChunkTypes.KIND_STRUCT -> {
 			Type struct = types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT);
-			walkConstant(stream, struct, childContext(context, type, field));
+			int child = childContext(context, type, field);
+			walkConstant(stream, struct, child, contextFieldLocations.get(child));
 		}
 		default -> throw new IOException("Unexpected field kind " + kind);
 		}
 	}
 
-	private void readConstantString(RecordingStream stream, int kind, int context, int field, Type type)
-			throws IOException {
+	private void readConstantString(
+		RecordingStream stream, int kind, int context, int field, Type type, int[] fieldLocations) throws IOException {
 		int result = decoder.read(stream, kind);
 		if (result == StringDecoder.STRING) {
 			int entry = strings.add(decoder.array, decoder.offset, decoder.length, StringScanner.CONSTANT_POOL);
-			currentConstant.add(entry, fieldLocation(context, type, field));
+			int location = fieldLocations[field + 1];
+			if (location < 0) {
+				location = fieldLocation(context, type, field);
+			}
+			currentConstant.add(entry, location);
 			if (checkpointStringCount == checkpointStrings.length) {
 				checkpointStrings = Arrays.copyOf(checkpointStrings, checkpointStringCount * 2);
 			}
 			checkpointStrings[checkpointStringCount++] = entry;
 		} else if (result == StringDecoder.REFERENCE && types.stringTypeIndex >= 0) {
-			addReference(types.stringTypeIndex, decoder.reference, fieldLocation(context, type, field));
+			int location = fieldLocations[field + 1];
+			if (location < 0) {
+				location = fieldLocation(context, type, field);
+			}
+			addLink(types.stringTypeIndex, decoder.reference, location, currentConstant);
 		}
 	}
 
-	private void addReference(int pool, long key, int sourceFieldLocation) {
-		if (key == 0) {
-			return; // null reference
-		}
-		// Most references repeat, such as every stack frame referring to one of a few frame types
-		int slot = (int) ((key * 0x9E3779B97F4A7C15L + pool * 31 + sourceFieldLocation) >>> 56) & 0xFF;
-		if (recentKeys[slot] == key && recentPools[slot] == pool && recentSources[slot] == sourceFieldLocation) {
+	/**
+	 * A reference from a field to a folding constant, whose value is thereby a value of the field:
+	 * a link on the folding constant naming the field and the constant holding it, resolved at
+	 * chunk end with that constant's referrers, see {@link #locateThroughLinks}. A link from a
+	 * field of a tracked constant is kept as is, since each constant has referrers of its own; a
+	 * link from a field of an event, or of a constant that is not tracked, has no source, and a
+	 * repeat carries nothing new, so the recent ones are skipped. Key 0 into the string pool is
+	 * null, as the scanner's reference counting takes it: HotSpot numbers the entries of its string
+	 * pool from 1 and inlines a string whose number is not positive, and JMC's writer numbers from
+	 * 1 as well, so no known writer refers to key 0, while the enumerations of HotSpot's simple
+	 * types, the frame types among them, start at key 0.
+	 *
+	 * @param source
+	 *            the record of the constant holding the field, or null for an event or a constant
+	 *            that is not tracked
+	 */
+	private void addLink(int pool, long key, int fieldLocation, ConstantRecord source) {
+		if (key == 0 && pool == types.stringTypeIndex) {
 			return;
 		}
-		recentKeys[slot] = key;
-		recentPools[slot] = pool;
-		recentSources[slot] = sourceFieldLocation;
-		constants.get(pool, key).addReferrer(sourceFieldLocation);
+		if (source != null) {
+			constants.get(pool, key).addLink(fieldLocation, source.index);
+		} else if (!isRecent(key, packed(pool, fieldLocation))) {
+			constants.get(pool, key).addFieldLink(fieldLocation);
+		}
+	}
+
+	/**
+	 * The field of a constant referring to an entity storing strings, see
+	 * {@link ChunkTypes.Type#containsStrings}: a referrer of the entity, whose record is made now
+	 * if the entity's constant is yet to arrive, unless seen recently. Key 0 is null, as HotSpot
+	 * writes a null class or thread. The entities storing no strings, such as classes and methods,
+	 * are not referred to through this program, see {@link ChunkTypes.Type#locationFields}.
+	 */
+	private void addReference(int pool, long key, int sourceFieldLocation) {
+		if (key != 0 && !isRecent(key, packed(pool, sourceFieldLocation))) {
+			constants.get(pool, key).addReferrer(sourceFieldLocation);
+		}
+	}
+
+	/**
+	 * Whether the reference to the constant with the key from the field, the pool and the field
+	 * packed by {@link #packed}, was seen recently, remembering it otherwise. The slot mixes the
+	 * field and the pool into the key before the multiplication, so that references to one constant
+	 * from different fields, as from the fields of an event referring to the same constant, keep
+	 * slots of their own.
+	 */
+	private boolean isRecent(long key, long meta) {
+		int slot = (int) (((key ^ (meta << 20)) * GOLDEN) >>> (64 - RECENT_BITS)) << 1;
+		if (recent[slot] == key && recent[slot + 1] == meta) {
+			return true;
+		}
+		recent[slot] = key;
+		recent[slot + 1] = meta;
+		return false;
+	}
+
+	/** The pool and the field of a reference packed into one long, plus one so that 0 is empty */
+	private static long packed(int pool, int fieldLocation) {
+		return (((long) pool << 32) | fieldLocation) + 1;
 	}
 
 	private void addPair(int entry, int location) {
@@ -575,10 +987,15 @@ final class LocationCollector implements ChunkParserListener {
 		int[] children = new int[type.fields.length];
 		Arrays.fill(children, -1);
 		contextChildren.add(children);
-		int[] fieldLocations = new int[type.fields.length + 1];
-		Arrays.fill(fieldLocations, -1);
-		contextFieldLocations.add(fieldLocations);
+		contextFieldLocations.add(unknownFieldLocations(type.fields.length + 1));
+		contextConstantValueLocations.add(null);
 		return contextOwners.size() - 1;
+	}
+
+	private static int[] unknownFieldLocations(int count) {
+		int[] fieldLocations = new int[count];
+		Arrays.fill(fieldLocations, -1);
+		return fieldLocations;
 	}
 
 	/** Field -1 denotes the value of a constant without fields, such as a string constant */
@@ -586,12 +1003,35 @@ final class LocationCollector implements ChunkParserListener {
 		int[] fieldLocations = contextFieldLocations.get(context);
 		int id = fieldLocations[field + 1];
 		if (id < 0) {
-			String name = field < 0 ? NO_FIELD : type.fieldNames[field];
-			id = fieldLocationId(contextOwners.get(context), join(contextPaths.get(context), name),
+			id = fieldLocationId(contextOwners.get(context), fieldPath(context, type, field),
 					contextConstant.get(context));
 			fieldLocations[field + 1] = id;
 		}
 		return id;
+	}
+
+	/**
+	 * The location of a value of the field of an event read from a constant, of the string pool or
+	 * of another folding type: the field, as a constant, which is distinct from the location of its
+	 * inline values. The context's cache is allocated on its first reference.
+	 */
+	private int constantValueLocation(int context, Type type, int field) {
+		int[] fieldLocations = contextConstantValueLocations.get(context);
+		if (fieldLocations == null) {
+			fieldLocations = unknownFieldLocations(type.fields.length);
+			contextConstantValueLocations.set(context, fieldLocations);
+		}
+		int id = fieldLocations[field];
+		if (id < 0) {
+			id = fieldLocationId(contextOwners.get(context), fieldPath(context, type, field), true);
+			fieldLocations[field] = id;
+		}
+		return id;
+	}
+
+	/** The path of the field within the owner */
+	private String fieldPath(int context, Type type, int field) {
+		return join(contextPaths.get(context), field < 0 ? NO_FIELD : type.fieldNames[field]);
 	}
 
 	private int fieldLocationId(String owner, String path, boolean constant) {
@@ -607,23 +1047,35 @@ final class LocationCollector implements ChunkParserListener {
 		return id;
 	}
 
+	/** The id of the constant's set of referrers, computed once per constant and chunk */
 	private int referrerSetId(ConstantRecord constant) {
-		if (constant.referrerCount == 0) {
+		int id = constant.referrerSet;
+		if (id < 0) {
+			id = computeReferrerSetId(constant);
+			constant.referrerSet = id;
+		}
+		return id;
+	}
+
+	private int computeReferrerSetId(ConstantRecord constant) {
+		int count = constant.referrerCount;
+		if (count == 0) {
 			return 0;
 		}
-		if (constant.referrerCount == 1) {
-			int fieldLocation = constant.referrers[0];
+		int[] referrers = constant.referrers;
+		if (count == 1) {
+			int fieldLocation = referrers[0];
 			if (fieldLocation >= singleReferrerSets.length) {
 				int oldLength = singleReferrerSets.length;
 				singleReferrerSets = Arrays.copyOf(singleReferrerSets, Math.max(fieldLocation + 1, oldLength * 2));
 				Arrays.fill(singleReferrerSets, oldLength, singleReferrerSets.length, -1);
 			}
 			if (singleReferrerSets[fieldLocation] < 0) {
-				singleReferrerSets[fieldLocation] = referrerSetId(constant.referrers, 1);
+				singleReferrerSets[fieldLocation] = referrerSetId(referrers, 1);
 			}
 			return singleReferrerSets[fieldLocation];
 		}
-		return referrerSetId(constant.referrers, constant.referrerCount);
+		return referrerSetId(referrers, count);
 	}
 
 	private int referrerSetId(int[] referrers, int count) {
@@ -645,8 +1097,8 @@ final class LocationCollector implements ChunkParserListener {
 
 	private int locationId(int fieldLocation, int referrerSet) {
 		long key = ((long) fieldLocation << 32) | referrerSet;
-		Integer id = locationIds.get(key);
-		if (id == null) {
+		int id = locationIds.get(key);
+		if (id < 0) {
 			id = locations.size();
 			locations.add(
 					new StringLocation(fieldLocationOwners.get(fieldLocation), fieldLocationPaths.get(fieldLocation),

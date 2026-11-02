@@ -62,6 +62,14 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 			<version>${junit.version}</version>
 			<scope>test</scope>
 		</dependency>
+		<!-- JDK Mission Control's writer, which the tests write recordings with layouts HotSpot never
+			writes with, such as every string stored through the java.lang.String constant pool -->
+		<dependency>
+			<groupId>org.openjdk.jmc</groupId>
+			<artifactId>flightrecorder.writer</artifactId>
+			<version>${jmc.version}</version>
+			<scope>test</scope>
+		</dependency>
 		<!-- JDK Mission Control's parser, which the tests load redacted recordings with -->
 		<dependency>
 			<groupId>org.openjdk.jmc</groupId>

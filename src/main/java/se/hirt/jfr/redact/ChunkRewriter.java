@@ -69,10 +69,11 @@ final class ChunkRewriter {
 	/** Per checkpoint in recording order, whether it stores a string to replace */
 	private final boolean[] changedCheckpoints;
 	private int checkpointOrdinal;
-	/** Names of the event and constant pool types storing strings to replace */
+	/** Names of the event types storing strings to replace inline */
 	private final Set<String> changedEventTypes;
-	private final Set<String> changedPoolTypes;
-	/** Per type index in the current chunk, whether values may store strings to replace */
+	/**
+	 * Per type index in the current chunk, whether events of the type may store strings to replace
+	 */
 	private boolean[] changedTypes;
 	/** Encoded replacements per kind, created on demand */
 	private final byte[][] encodedStrings;
@@ -107,14 +108,19 @@ final class ChunkRewriter {
 	 *            the strings to replace
 	 * @param replacements
 	 *            per string entry, the replacement
+	 * @param changedCheckpoints
+	 *            per checkpoint in recording order, whether it stores a string to replace: the
+	 *            checkpoints are rewritten by this alone, every pool of a changed checkpoint
+	 *            re-encoded
+	 * @param changedEventTypes
+	 *            the event types storing a string to replace inline, the only events decoded
 	 */
 	ChunkRewriter(StringCountMap strings, String[] replacements, boolean[] changedCheckpoints,
-			Set<String> changedEventTypes, Set<String> changedPoolTypes) {
+			Set<String> changedEventTypes) {
 		this.strings = strings;
 		this.replacements = replacements;
 		this.changedCheckpoints = changedCheckpoints;
 		this.changedEventTypes = changedEventTypes;
-		this.changedPoolTypes = changedPoolTypes;
 		this.encodedStrings = new byte[replacements.length][];
 		this.encodedUtf8 = new byte[replacements.length][];
 		this.encodedUtf16 = new byte[replacements.length][];
@@ -134,8 +140,7 @@ final class ChunkRewriter {
 			checkpointOffsets.clear();
 			changedTypes = new boolean[types.size()];
 			for (int i = 0; i < types.size(); i++) {
-				String name = types.getByIndex(i).name;
-				changedTypes[i] = changedEventTypes.contains(name) || changedPoolTypes.contains(name);
+				changedTypes[i] = changedEventTypes.contains(types.getByIndex(i).name);
 			}
 			if (legacy) {
 				rewriteLegacyChunk();

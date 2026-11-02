@@ -2,10 +2,18 @@
 
 High performance string redaction for JDK Flight Recorder recordings.
 
-Strings in a JFR recording do not only live in the constant pools. A string can be written inline in an event, as an
-entry in the `java.lang.String` constant pool, or inline in another constant pool entry (for example the
-`jdk.types.Symbol` entries that hold method and class names). The JDK event writer also inlines a string the first few
-times it is seen and only later moves it to the constant pool, so the same string commonly appears in both places.
+Strings in a JFR recording do not only live in the constant pools. A string can be written inline in an event, inline
+in a constant pool entry (for example the `jdk.types.Symbol` entries that hold method and class names), or as an entry
+in the `java.lang.String` constant pool that an event or constant field refers to. HotSpot's JVM writes its own strings
+(the symbols of stack traces, thread names, thread dumps) inline, in events and in constants alike. Its Java event
+writer, which writes the events of `jdk.jfr.Event` subclasses and other Java-side events, inlines strings of up to 16
+characters, inlines a string of 17 to 128 characters the first time it is seen and pools it when it is seen again
+shortly after (JDK 11 does the same, except that the first string it ever pools, which it numbers 0, is written inline
+while its entry sits unreferenced in the pool), and pools longer strings, up to 131071 characters, on first sight from
+JDK 24 on and in the updates the fix was backported to (OpenJDK 21.0.6 and 23.0.2, and some vendor updates of older
+releases; JDK-8338389), while earlier JDKs inline them, so the same string commonly appears both inline and in the
+pool. JDK Mission Control's `flightrecorder.writer` pools every non-empty string it writes, the names of threads,
+classes and methods included.
 
 ## Status
 
@@ -51,11 +59,25 @@ Replace `references` with `inlined` or `length` to sort by either of those colum
 
 `JfrRedactor.redact(input, output, redactor)` writes a copy of a recording with strings replaced. The
 `StringRedactor` is called once per distinct string, after the whole recording has been analyzed, with every location
-the string is stored at: the event or constant pool type, the field, and for constants the fields of other constants
-referring to it (a method name is a `jdk.types.Symbol` referred to by `jdk.types.Method.name`). Its decision applies to
-every occurrence of the string, inline in events, in constant pools and in all chunks, so no copy of a redacted string
-remains. The one exception is the metadata (type, field and annotation names and values), which is not redacted:
-redacted strings that also occur there, as whole strings or within longer strings, are reported in the result.
+the string is stored at: the event or constant pool type and the field whose value it is, and whether that value is
+inlined in an event or stored in a constant pool. A constant pool type the metadata declares a simple type, one with a
+single field such as `jdk.types.Symbol`, is read by every reader as that value, so its strings are located at the
+fields referring to it: a method name is the value of `jdk.types.Method.name`, as a constant, a class name the value of
+`java.lang.Class.name`, the state of a sample the value of `jdk.ExecutionSample.state`. The `java.lang.String`
+constant pool is read the same way, so a value stored in it belongs to the event or constant field referring to it,
+through a symbol where a writer pools the symbols too; the simple type or the pool itself is the location only of a
+constant that no field of the same chunk refers to, and a constant referred to in one chunk and in none of another is
+located both ways. The other constant pool types, such as `java.lang.Thread` and `jdk.types.Method`, are entities:
+their strings are located at their fields, and the fields of other constants referring to an entity are its referrers
+when the entity stores strings itself (a thread group's name is referred to by `java.lang.Thread.group`), while a class
+or a method, whose names are all symbols or pool entries, has none. JFR 0.9 declares no simple types, so JRockit's
+interned strings are located at the constant storing them, `UTFConstant.utf8` referred to by `Method.name`. The
+predicates of `StringLocation` classify the JDK's own fields; a field of a writer's own event or constant type holding,
+say, class names is reached by a rule on its owner and field (`replaceIf`), which covers the inline and the pooled
+copies alike, or by content (`--replace`, `--match`). A string's decision applies to every occurrence of it, inline in
+events, in constant pools and in all chunks, so no copy of a redacted string remains. The one exception is the metadata
+(type, field and annotation names and values), which is not redacted: redacted strings that also occur there, as whole
+strings or within longer strings, are reported in the result.
 
 Redaction rejects undeclared event types and payloads it cannot decode when collecting strings. Event types that
 cannot contain inline strings are skipped using their declared event sizes and copied verbatim; their payloads are
@@ -76,7 +98,8 @@ as constants and in the `Thread Group:` of old-object descriptions, since group 
 replaced as a thread name. The groups the JVM creates itself, `system` and `main`, name nothing of the application
 and are left alone unless they are also thread names. The empty name of an unnamed virtual thread is not a thread
 name and is left to later rules. Names stored through the `java.lang.String` constant pool, as JDK Mission Control's
-`flightrecorder.writer` does, are recognized by the thread or thread group field referring to them.
+`flightrecorder.writer` does, are located at the thread or thread group field like inline ones, so they are hashed
+like inline ones.
 
 `--hash-class-names` replaces the part of class names matching a regular expression with a hash, segment by segment:
 as constants, in array class names and method descriptors, in the frames of thread dumps together with their source
@@ -139,7 +162,7 @@ HotSpot, used by the tests and examples:
 | `jdk9-basic.jfr` | 1.0 | JDK 9 running JConsole, with RMI connection threads |
 | `jdk9-weblogic-medrec.jfr` | 1.0 | WebLogic running the MedRec patient records demo, with SQL, servlet and EJB events |
 | `jdk21-jmc.jfr` | 2.1 | JDK 21 running JDK Mission Control, with thread dumps containing hidden-class frames |
-| `jmc-writer-pooled.jfr` | 2.0 | Written by JMC's pure-Java `flightrecorder.writer`, storing thread, class and thread group names through the `java.lang.String` constant pool |
+| `jmc-writer-pooled.jfr` | 2.0 | Written by JMC's pure-Java `flightrecorder.writer`, storing every string, the thread, thread group, class and method names included, through the `java.lang.String` constant pool |
 
 The first four come from the JDK Mission Control test resources, see [NOTICE](NOTICE). Personal data in two of them
 was replaced with jfr-redact itself, using the `ScrubPersonalData` example. The last one was generated for jfr-redact
