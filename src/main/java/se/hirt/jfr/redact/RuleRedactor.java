@@ -36,6 +36,7 @@ import java.util.Base64;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
@@ -48,8 +49,8 @@ import javax.crypto.spec.SecretKeySpec;
 import se.hirt.jfr.redact.internal.Utf8;
 
 /**
- * A {@link StringRedactor} applying simple rules, without regular expressions. Rules are tried in
- * order, and the first matching rule decides. The kinds of rules are:
+ * A {@link StringRedactor} applying rules. Rules are tried in order, and the first matching rule
+ * decides. The kinds of rules are:
  * <ul>
  * <li>{@link Builder#hashThreadNames()} replaces thread names with {@code Thread-<hash>} and thread
  * group names with {@code ThreadGroup-<hash>}.</li>
@@ -66,6 +67,8 @@ import se.hirt.jfr.redact.internal.Utf8;
  * ({@code java/util/HashMap}), and in method descriptors and array class names
  * ({@code (Ljava/util/List;)V}, {@code [Ljava/util/HashMap;}).</li>
  * <li>{@link Builder#replace(String, String)} replaces strings matching a glob pattern.</li>
+ * <li>{@link Builder#replaceMatching(String, String)} replaces strings containing a match of a
+ * regular expression.</li>
  * </ul>
  * A pattern may start and/or end with {@code *}, which matches any characters, so matching is
  * always one of {@code equals}, {@code startsWith}, {@code endsWith} or {@code contains}:
@@ -188,6 +191,21 @@ public final class RuleRedactor implements StringRedactor {
 				}
 				return null;
 			});
+			return this;
+		}
+
+		/**
+		 * Adds a rule replacing every string containing a match of the regular expression, as a
+		 * whole, with the replacement, as {@code --match} does on the command line. Thread dumps
+		 * and old object descriptions are matched as the preceding rules rewrote them.
+		 *
+		 * @throws java.util.regex.PatternSyntaxException
+		 *             if the expression is invalid
+		 */
+		public Builder replaceMatching(String regex, String replacement) {
+			Pattern pattern = Pattern.compile(regex);
+			Objects.requireNonNull(replacement, "replacement");
+			rules.add((value, locations) -> pattern.matcher(value).find() ? replacement : null);
 			return this;
 		}
 

@@ -241,6 +241,28 @@ class MainTest {
 		assertThrows(IllegalArgumentException.class, () -> run("scan", "--sort"));
 	}
 
+	/**
+	 * {@code --match} is the last rule, so it also reaches the thread dumps whose thread names
+	 * {@code --hash-thread-names} rewrote first, as it reaches every other string
+	 */
+	@Test
+	void matchReachesThreadDumpsRewrittenByNameRules(@TempDir
+	Path dir) throws Exception {
+		Path input = Path.of(MainTest.class.getResource("/recordings/jdk21-jmc.jfr").toURI());
+		Path output = dir.resolve("redacted.jfr");
+		assertTrue(stringsOf(input, dir.resolve("input.tsv")).contains("Full thread dump"),
+				"the input must contain thread dumps");
+		run("redact", "--hash-thread-names", "--match", "Full thread dump", input.toString(), output.toString());
+		String strings = stringsOf(output, dir.resolve("output.tsv"));
+		assertFalse(strings.contains("Full thread dump"), "a thread dump remains");
+		assertTrue(strings.contains("<REDACTED>"), "the thread dumps are replaced");
+	}
+
+	private static String stringsOf(Path recording, Path tsv) throws Exception {
+		run("scan", "--top", "0", "--out", tsv.toString(), recording.toString());
+		return Files.readString(tsv, StandardCharsets.UTF_8);
+	}
+
 	private static Path recording() throws Exception {
 		return Path.of(MainTest.class.getResource("/recordings/jdk9-basic.jfr").toURI());
 	}

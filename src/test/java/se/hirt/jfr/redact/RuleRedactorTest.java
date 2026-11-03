@@ -1787,6 +1787,30 @@ class RuleRedactorTest {
 		assertTrue(!pool.isThreadDump() && !pool.isComposite(), pool.toString());
 	}
 
+	/**
+	 * A regular expression rule replaces a string containing a match as a whole, unless an earlier
+	 * rule replaced it, and matches a thread dump as the name rules before it rewrote it: a dump
+	 * still containing a match is replaced, one whose matching name was hashed is not
+	 */
+	@Test
+	void replacesStringsContainingAMatchOfARegularExpression() {
+		String dump = "\"worker\" daemon prio=6 tid=0x000000000ebd4000 nid=0x1578 waiting on condition\n"
+				+ "\tat com.acme.Worker.run(Worker.java:42)\n";
+		RuleRedactor redactor = RuleRedactor.builder().hashThreadNames().replaceMatching("com\\.acme", "<R>").build();
+		assertEquals("<R>", redactor.redact(dump, List.of(THREAD_DUMP)));
+		assertEquals("<R>", redactor.redact("jdbc:com.acme:db", List.of()));
+		assertEquals("unrelated", redactor.redact("unrelated", List.of()));
+		String thread = redactor.redact("com.acme-worker", List.of(THREAD_NAME));
+		assertTrue(thread.matches("Thread-[0-9a-f]{8}"), "the first rule decides: " + thread);
+		RuleRedactor hashedFirst = RuleRedactor.builder().hashThreadNames().replaceMatching("\"worker\"", "<R>")
+				.build();
+		String rewritten = hashedFirst.redact(dump, List.of(THREAD_DUMP));
+		assertTrue(rewritten.matches("(?s)\"Thread-[0-9a-f]{8}\" daemon .*"), rewritten);
+		assertThrows(NullPointerException.class, () -> RuleRedactor.builder().replaceMatching("x", null));
+		assertThrows(java.util.regex.PatternSyntaxException.class,
+				() -> RuleRedactor.builder().replaceMatching("(", "<R>"));
+	}
+
 	/** The class name hashed by the redactor, in source form as it appears in thread dumps */
 	private static String hashedSource(RuleRedactor redactor, String className) {
 		String hashed = redactor.redact(className.replace('.', '/'), List.of(CLASS_NAME));

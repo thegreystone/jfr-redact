@@ -37,11 +37,12 @@
  *
  * <pre>{@code
  * RedactionResult result = JfrRedactor.redact(Path.of("in.jfr"), Path.of("out.jfr"),
- * 		RuleRedactor.builder().replace("java.util.*", "utilz.*").build());
+ * 		RuleRedactor.builder().renamePackage("java.util", "utilz").build());
  * }</pre>
  *
  * Note that class and package names are stored in their internal form in recordings, such as
  * {@code java/util/HashMap}, and also occur in method descriptors such as
- * {@code (Ljava/util/List;)V}.
+ * {@code (Ljava/util/List;)V}: {@link RuleRedactor.Builder#renamePackage(String, String)} renames
+ * every form, while patterns and regular expressions see the strings as stored.
  */
 package se.hirt.jfr.redact;
