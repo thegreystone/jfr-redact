@@ -81,13 +81,13 @@ public final class StringLocation {
 
 	private final String owner;
 	private final String field;
-	private final boolean constant;
+	private final boolean pooled;
 	private final List<String> referrers;
 
-	StringLocation(String owner, String field, boolean constant, List<String> referrers) {
+	StringLocation(String owner, String field, boolean pooled, List<String> referrers) {
 		this.owner = owner;
 		this.field = field;
-		this.constant = constant;
+		this.pooled = pooled;
 		this.referrers = referrers;
 	}
 
@@ -112,10 +112,14 @@ public final class StringLocation {
 	 *         owner, such as the name of a thread in {@code java.lang.Thread}, or in the constant
 	 *         of a simple type or the {@code java.lang.String} pool that the field refers to, such
 	 *         as the name of a method in the {@code jdk.types.Symbol} that
-	 *         {@code jdk.types.Method.name} refers to; {@code false} if it is inlined in an event
+	 *         {@code jdk.types.Method.name} refers to, or the value of an event field the writer
+	 *         pooled; {@code false} if it is inlined in an event. This tells how a copy of the
+	 *         string is stored, not what it is: the JDK's Java event writer inlines or pools a
+	 *         string by its length and by how recently it was seen, so the values of one event
+	 *         field can be located both ways, and a rule on the owner and field reaches both.
 	 */
-	public boolean isConstant() {
-		return constant;
+	public boolean isPooled() {
+		return pooled;
 	}
 
 	/**
@@ -139,7 +143,7 @@ public final class StringLocation {
 	 *         the writer stored the name in the thread's constant or in the string pool
 	 */
 	public boolean isThreadName() {
-		if (!constant) {
+		if (!pooled) {
 			return false;
 		}
 		return switch (owner) {
@@ -157,7 +161,7 @@ public final class StringLocation {
 	 *         group's constant or in the string pool
 	 */
 	public boolean isThreadGroupName() {
-		if (!constant) {
+		if (!pooled) {
 			return false;
 		}
 		return switch (owner) {
@@ -175,7 +179,7 @@ public final class StringLocation {
 	 *         or in JFR 0.9 a constant referred to by {@code Class.name}
 	 */
 	public boolean isClassName() {
-		return isConstantOf(CLASS_NAME_FIELDS) || isReferredToBy(LEGACY_CLASS_NAME_REFERRERS)
+		return isPooledValueOf(CLASS_NAME_FIELDS) || isReferredToBy(LEGACY_CLASS_NAME_REFERRERS)
 				|| isCompilerInliningCallee("callee.type");
 	}
 
@@ -187,7 +191,7 @@ public final class StringLocation {
 	 *         in JFR 0.9 a constant referred to by {@code Method.signature}
 	 */
 	public boolean isMethodDescriptor() {
-		return isConstantOf(METHOD_DESCRIPTOR_FIELDS) || isReferredToBy(LEGACY_METHOD_DESCRIPTOR_REFERRERS)
+		return isPooledValueOf(METHOD_DESCRIPTOR_FIELDS) || isReferredToBy(LEGACY_METHOD_DESCRIPTOR_REFERRERS)
 				|| isCompilerInliningCallee("callee.descriptor");
 	}
 
@@ -198,7 +202,7 @@ public final class StringLocation {
 	 *         constant referred to by {@code Method.name}
 	 */
 	public boolean isMethodName() {
-		return isConstantOf(METHOD_NAME_FIELDS) || isReferredToBy(LEGACY_METHOD_NAME_REFERRERS)
+		return isPooledValueOf(METHOD_NAME_FIELDS) || isReferredToBy(LEGACY_METHOD_NAME_REFERRERS)
 				|| isCompilerInliningCallee("callee.name");
 	}
 
@@ -209,7 +213,7 @@ public final class StringLocation {
 	 *         stores no package names. The default package is named by the empty string.
 	 */
 	public boolean isPackageName() {
-		return isConstantOf(PACKAGE_NAME_FIELDS);
+		return isPooledValueOf(PACKAGE_NAME_FIELDS);
 	}
 
 	/**
@@ -220,7 +224,7 @@ public final class StringLocation {
 	 *         strings.
 	 */
 	public boolean isModuleName() {
-		return isConstantOf(MODULE_NAME_FIELDS);
+		return isPooledValueOf(MODULE_NAME_FIELDS);
 	}
 
 	/**
@@ -228,13 +232,13 @@ public final class StringLocation {
 	 * whose class name, method name and descriptor are written inline, not as constants
 	 */
 	private boolean isCompilerInliningCallee(String calleeField) {
-		return !constant && field.equals(calleeField)
+		return !pooled && field.equals(calleeField)
 				&& (owner.equals("jdk.CompilerInlining") || owner.equals("com.oracle.jdk.CompilerInlining"));
 	}
 
-	/** True if this is a constant value of one of the fields, given as owner and field pairs */
-	private boolean isConstantOf(String[] ownersAndFields) {
-		if (!constant) {
+	/** True if this is a pooled value of one of the fields, given as owner and field pairs */
+	private boolean isPooledValueOf(String[] ownersAndFields) {
+		if (!pooled) {
 			return false;
 		}
 		for (int i = 0; i < ownersAndFields.length; i += 2) {
@@ -277,7 +281,7 @@ public final class StringLocation {
 	 *         as {@code Thread Name: main}
 	 */
 	public boolean isOldObjectDescription() {
-		return constant && field.equals("description")
+		return pooled && field.equals("description")
 				&& (owner.equals("jdk.types.OldObject") || owner.equals("jdk.types.OldObjectGcRoot"));
 	}
 
@@ -291,7 +295,7 @@ public final class StringLocation {
 
 	@Override
 	public String toString() {
-		String s = owner + "." + field + (constant ? " (constant)" : " (inline)");
+		String s = owner + "." + field + (pooled ? " (pooled)" : " (inline)");
 		return referrers.isEmpty() ? s : s + " referred to by " + String.join(", ", referrers);
 	}
 }

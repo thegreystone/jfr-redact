@@ -112,8 +112,8 @@ class PooledStringTest {
 
 	/**
 	 * The value stored both inline and in the pool has one location for each copy, differing in
-	 * {@link StringLocation#isConstant()}, and the value stored in the pool only has the constant
-	 * one; neither is located at the pool, and a rule on the event's field reaches both
+	 * {@link StringLocation#isPooled()}, and the value stored in the pool only has the pooled one;
+	 * neither is located at the pool, and a rule on the event's field reaches both
 	 */
 	@Test
 	void locatesPooledEventValuesAtTheirField(@TempDir
@@ -145,9 +145,9 @@ class PooledStringTest {
 
 		Map<String, List<StringLocation>> locations = locationsOf(input, dir.resolve("unchanged.jfr"),
 				Set.of(repeated, longValue));
-		assertEquals(List.of("test.Sql.sql (constant)", "test.Sql.sql (inline)"), sorted(locations.get(repeated)),
+		assertEquals(List.of("test.Sql.sql (inline)", "test.Sql.sql (pooled)"), sorted(locations.get(repeated)),
 				"one location per copy, none at the pool");
-		assertEquals(List.of(poolsOnFirstSight ? "test.Sql.sql (constant)" : "test.Sql.sql (inline)"),
+		assertEquals(List.of(poolsOnFirstSight ? "test.Sql.sql (pooled)" : "test.Sql.sql (inline)"),
 				sorted(locations.get(longValue)));
 
 		Path output = dir.resolve("output.jfr");
@@ -192,14 +192,14 @@ class PooledStringTest {
 	Path dir) throws Exception {
 		String repeated = unique("select ssn from patients where id = ", 40);
 		Path input = record(dir.resolve("input.jfr"), repeated, null);
-		assertEquals(List.of("test.Sql.sql (constant)", "test.Sql.sql (inline)"),
+		assertEquals(List.of("test.Sql.sql (inline)", "test.Sql.sql (pooled)"),
 				sorted(locationsOf(input, dir.resolve("intact.jfr"), Set.of(repeated)).get(repeated)),
 				"while the references hold, the entry is located at the field");
 		renameStringPoolEntry(input, repeated);
 		assertEquals(4, scan(input).getUnresolvedReferenceCount(), "the references to the renamed entry dangle");
 		Map<String, List<StringLocation>> locations = locationsOf(input, dir.resolve("unchanged.jfr"),
 				Set.of(repeated));
-		assertEquals(List.of("java.lang.String.value (constant)", "test.Sql.sql (inline)"),
+		assertEquals(List.of("java.lang.String.value (pooled)", "test.Sql.sql (inline)"),
 				sorted(locations.get(repeated)));
 
 		Path output = dir.resolve("output.jfr");
@@ -238,8 +238,8 @@ class PooledStringTest {
 		assertEquals(3, strings.getReferenceCount(entry), "the two events and the thread's constant refer to it");
 
 		List<StringLocation> locations = locationsOf(input, dir.resolve("unchanged.jfr"), Set.of(shared)).get(shared);
-		assertEquals(List.of("java.lang.Thread.javaName (constant)", "test.First.value (constant)",
-				"test.Second.value (constant)"), sorted(locations));
+		assertEquals(List.of("java.lang.Thread.javaName (pooled)", "test.First.value (pooled)",
+				"test.Second.value (pooled)"), sorted(locations));
 		assertTrue(locations.stream().anyMatch(StringLocation::isThreadName), locations.toString());
 
 		Path output = dir.resolve("output.jfr");
@@ -294,8 +294,8 @@ class PooledStringTest {
 
 		Map<String, List<StringLocation>> locations = locationsOf(dangling, dir.resolve("unchanged.jfr"),
 				Set.of(dangled, intact));
-		assertEquals(List.of("test.Dangling.value (constant)"), sorted(locations.get(intact)));
-		assertEquals(List.of("java.lang.String.value (constant)"), sorted(locations.get(dangled)),
+		assertEquals(List.of("test.Dangling.value (pooled)"), sorted(locations.get(intact)));
+		assertEquals(List.of("java.lang.String.value (pooled)"), sorted(locations.get(dangled)),
 				"referred to by nothing, the entry is located at the pool");
 
 		Path output = dir.resolve("output.jfr");
@@ -330,8 +330,8 @@ class PooledStringTest {
 		assertEquals(0, strings.getReferenceCount(entry), "nothing refers to the orphan");
 		Map<String, List<StringLocation>> locations = locationsOf(first, dir.resolve("unchanged.jfr"),
 				Set.of(orphan, referenced));
-		assertEquals(List.of("java.lang.String.value (constant)"), sorted(locations.get(orphan)));
-		assertEquals(List.of("test.First.value (constant)"), sorted(locations.get(referenced)));
+		assertEquals(List.of("java.lang.String.value (pooled)"), sorted(locations.get(orphan)));
+		assertEquals(List.of("test.First.value (pooled)"), sorted(locations.get(referenced)));
 
 		Path second = JmcWriterRecording.write(dir.resolve("second.jfr"), recording -> {
 			Type type = recording.registerEventType("test.Second", b -> b.addField("value", Types.Builtin.STRING));
@@ -340,9 +340,9 @@ class PooledStringTest {
 		});
 		Path both = JmcWriterRecording.concatenate(dir.resolve("both.jfr"), first, second);
 		locations = locationsOf(both, dir.resolve("both-unchanged.jfr"), Set.of(orphan, referenced));
-		assertEquals(List.of("java.lang.String.value (constant)", "test.Second.value (constant)"),
+		assertEquals(List.of("java.lang.String.value (pooled)", "test.Second.value (pooled)"),
 				sorted(locations.get(orphan)));
-		assertEquals(List.of("java.lang.String.value (constant)", "test.First.value (constant)"),
+		assertEquals(List.of("java.lang.String.value (pooled)", "test.First.value (pooled)"),
 				sorted(locations.get(referenced)));
 
 		Path output = dir.resolve("output.jfr");
@@ -409,16 +409,16 @@ class PooledStringTest {
 
 		Map<String, List<StringLocation>> locations = locationsOf(input, dir.resolve("unchanged.jfr"),
 				Set.of(label, note, keyed, text, tag, only));
-		assertEquals(List.of("test.Pooled.label (constant) referred to by test.Outer.inner"),
+		assertEquals(List.of("test.Pooled.label (pooled) referred to by test.Outer.inner"),
 				sorted(locations.get(label)), "a key into the string pool, like a reference");
-		assertEquals(List.of("test.Pooled.note (constant) referred to by test.Outer.inner"),
-				sorted(locations.get(note)), "inline in the same constant");
-		assertEquals(List.of("test.Keyed.key (constant)"), sorted(locations.get(keyed)),
+		assertEquals(List.of("test.Pooled.note (pooled) referred to by test.Outer.inner"), sorted(locations.get(note)),
+				"inline in the same constant");
+		assertEquals(List.of("test.Keyed.key (pooled)"), sorted(locations.get(keyed)),
 				"a constant of a type storing no string inline, which nothing refers to");
-		assertEquals(List.of("test.Evt.text (constant)"), sorted(locations.get(text)));
-		assertEquals(List.of("test.Evt.tag (constant)"), sorted(locations.get(tag)),
+		assertEquals(List.of("test.Evt.text (pooled)"), sorted(locations.get(text)));
+		assertEquals(List.of("test.Evt.tag (pooled)"), sorted(locations.get(tag)),
 				"a key in an event, like a reference");
-		assertEquals(List.of("test.KeyedOnly.tag (constant)"), sorted(locations.get(only)),
+		assertEquals(List.of("test.KeyedOnly.tag (pooled)"), sorted(locations.get(only)),
 				"an event storing no string inline, walked for its keys");
 
 		Path output = dir.resolve("output.jfr");
@@ -446,8 +446,8 @@ class PooledStringTest {
 	void locatesPooledValuesWhicheverOrderTheEntryAndItsReferencesArriveIn(@TempDir
 	Path dir) throws Exception {
 		String pooled = "value referred to by an event and by a constant";
-		List<String> expected = List.of("test.Evt.text (constant)",
-				"test.Holder.name (constant) referred to by test.Outer.inner");
+		List<String> expected = List.of("test.Evt.text (pooled)",
+				"test.Holder.name (pooled) referred to by test.Outer.inner");
 		for (boolean entryFirst : new boolean[] {false, true}) {
 			String order = entryFirst ? "entry-first" : "entry-last";
 			HandWrittenRecording recording = new HandWrittenRecording();
@@ -513,9 +513,9 @@ class PooledStringTest {
 		assertEquals(1, strings.getReferenceCount(strings.indexOf(one)));
 		Map<String, List<StringLocation>> locations = locationsOf(input, dir.resolve("unchanged.jfr"),
 				Set.of(zero, one));
-		assertEquals(List.of("java.lang.String.value (constant)"), sorted(locations.get(zero)),
+		assertEquals(List.of("java.lang.String.value (pooled)"), sorted(locations.get(zero)),
 				"referred to by key 0 only, the entry is located at the pool");
-		assertEquals(List.of("test.Evt.text (constant)"), sorted(locations.get(one)));
+		assertEquals(List.of("test.Evt.text (pooled)"), sorted(locations.get(one)));
 	}
 
 	/**
@@ -547,12 +547,12 @@ class PooledStringTest {
 		assertReadsBack(input, "test.Evt", "outer.mixed.note", mixedNote);
 		Map<String, List<StringLocation>> locations = locationsOf(input, dir.resolve("unchanged.jfr"),
 				Set.of(keyedOnly, mixedKey, mixedNote));
-		assertEquals(List.of("test.KeyedHolder.tag (constant)"), sorted(locations.get(keyedOnly)),
+		assertEquals(List.of("test.KeyedHolder.tag (pooled)"), sorted(locations.get(keyedOnly)),
 				"the holder stores no string itself: no referrers, although the outer constant refers to it");
-		assertEquals(List.of("test.MixedHolder.tag (constant) referred to by test.Outer.mixed"),
+		assertEquals(List.of("test.MixedHolder.tag (pooled) referred to by test.Outer.mixed"),
 				sorted(locations.get(mixedKey)),
 				"the holder stores a string inline, so both its values have the referrer");
-		assertEquals(List.of("test.MixedHolder.note (constant) referred to by test.Outer.mixed"),
+		assertEquals(List.of("test.MixedHolder.note (pooled) referred to by test.Outer.mixed"),
 				sorted(locations.get(mixedNote)));
 
 		Path output = dir.resolve("output.jfr");
@@ -607,9 +607,9 @@ class PooledStringTest {
 			return value;
 		});
 		assertEquals(Set.of(secret, deep, held), all.keySet(), "the aliases hold no strings of their own");
-		assertEquals(List.of("test.Evt.text (constant)"), sorted(all.get(secret)), "through two aliases");
-		assertEquals(List.of("test.Evt.deep (constant)"), sorted(all.get(deep)), "through twenty aliases");
-		assertEquals(List.of("test.Holder.name (constant) referred to by test.Outer.inner"), sorted(all.get(held)),
+		assertEquals(List.of("test.Evt.text (pooled)"), sorted(all.get(secret)), "through two aliases");
+		assertEquals(List.of("test.Evt.deep (pooled)"), sorted(all.get(deep)), "through twenty aliases");
+		assertEquals(List.of("test.Holder.name (pooled) referred to by test.Outer.inner"), sorted(all.get(held)),
 				"through an alias, from a constant storing strings, with its referrers");
 
 		Path output = dir.resolve("output.jfr");
@@ -671,30 +671,30 @@ class PooledStringTest {
 				Set.of(inlineClass, pooledClass, inlineMethod, pooledMethod, inlineDescriptor, pooledDescriptor,
 						inlinePackage, pooledPackage, inlineModule, pooledModule, "1.0", "2.0"));
 		for (String name : List.of(inlineClass, pooledClass)) {
-			assertEquals(List.of("java.lang.Class.name (constant) referred to by jdk.types.Method.type"),
+			assertEquals(List.of("java.lang.Class.name (pooled) referred to by jdk.types.Method.type"),
 					sorted(locations.get(name)), name);
 			assertClassified(locations.get(name), "class", name);
 		}
 		for (String name : List.of(inlineMethod, pooledMethod)) {
-			assertEquals(List.of("jdk.types.Method.name (constant)"), sorted(locations.get(name)), name);
+			assertEquals(List.of("jdk.types.Method.name (pooled)"), sorted(locations.get(name)), name);
 			assertClassified(locations.get(name), "method", name);
 		}
 		for (String name : List.of(inlineDescriptor, pooledDescriptor)) {
-			assertEquals(List.of("jdk.types.Method.descriptor (constant)"), sorted(locations.get(name)), name);
+			assertEquals(List.of("jdk.types.Method.descriptor (pooled)"), sorted(locations.get(name)), name);
 			assertClassified(locations.get(name), "descriptor", name);
 		}
 		for (String name : List.of(inlinePackage, pooledPackage)) {
-			assertEquals(List.of("jdk.types.Package.name (constant) referred to by java.lang.Class.package"),
+			assertEquals(List.of("jdk.types.Package.name (pooled) referred to by java.lang.Class.package"),
 					sorted(locations.get(name)), name);
 			assertClassified(locations.get(name), "package", name);
 		}
 		for (String name : List.of(inlineModule, pooledModule)) {
-			assertEquals(List.of("jdk.types.Module.name (constant) referred to by jdk.types.Package.module"),
+			assertEquals(List.of("jdk.types.Module.name (pooled) referred to by jdk.types.Package.module"),
 					sorted(locations.get(name)), name);
 			assertClassified(locations.get(name), "module", name);
 		}
 		for (String version : List.of("1.0", "2.0")) {
-			assertEquals(List.of("jdk.types.Module.version (constant) referred to by jdk.types.Package.module"),
+			assertEquals(List.of("jdk.types.Module.version (pooled) referred to by jdk.types.Package.module"),
 					sorted(locations.get(version)), version);
 			assertClassified(locations.get(version), "", version);
 		}

@@ -127,15 +127,15 @@ class SimpleTypeTest {
 		});
 		Map<String, List<StringLocation>> locations = locationsOf(input, dir.resolve("unchanged.jfr"),
 				Set.of(queried, shared, held, paired, orphan));
-		assertEquals(List.of("acme.Query.sql (constant)"), sorted(locations.get(queried)),
+		assertEquals(List.of("acme.Query.sql (pooled)"), sorted(locations.get(queried)),
 				"the value of the simple constant is the value of the event's field");
-		assertEquals(List.of("acme.Holder.sql (constant)"), sorted(locations.get(held)),
+		assertEquals(List.of("acme.Holder.sql (pooled)"), sorted(locations.get(held)),
 				"and of the constant's field, without referrers, as the holder stores no string itself");
-		assertEquals(List.of("acme.Holder.sql (constant)", "acme.Query.sql (constant)"), sorted(locations.get(shared)),
+		assertEquals(List.of("acme.Holder.sql (pooled)", "acme.Query.sql (pooled)"), sorted(locations.get(shared)),
 				"one constant referred to from both");
-		assertEquals(List.of("acme.Pair.text (constant)"), sorted(locations.get(paired)),
+		assertEquals(List.of("acme.Pair.text (pooled)"), sorted(locations.get(paired)),
 				"a two-field type is an entity");
-		assertEquals(List.of("acme.Interned.text (constant)"), sorted(locations.get(orphan)),
+		assertEquals(List.of("acme.Interned.text (pooled)"), sorted(locations.get(orphan)),
 				"a constant nothing refers to is located at its own field");
 
 		Path output = dir.resolve("output.jfr");
@@ -194,15 +194,14 @@ class SimpleTypeTest {
 		assertReadsBack(input, "test.Evt2", "outer.inner.note", note);
 		Map<String, List<StringLocation>> locations = locationsOf(input, dir.resolve("unchanged.jfr"),
 				Set.of(pooled, inlined, orphan, keyed, note));
-		assertEquals(List.of("test.Evt.link (constant)"), sorted(locations.get(pooled)),
+		assertEquals(List.of("test.Evt.link (pooled)"), sorted(locations.get(pooled)),
 				"the event, through the link, the word and the pool");
-		assertEquals(List.of("test.Holder.link (constant) referred to by test.Outer.inner"),
+		assertEquals(List.of("test.Holder.link (pooled) referred to by test.Outer.inner"),
 				sorted(locations.get(inlined)), "the entity's field, with the entity's referrers");
-		assertEquals(List.of("test.Link.word (constant)"), sorted(locations.get(orphan)),
+		assertEquals(List.of("test.Link.word (pooled)"), sorted(locations.get(orphan)),
 				"the own field of the first link nothing refers to");
-		assertEquals(List.of("test.Evt.keyed (constant)"), sorted(locations.get(keyed)));
-		assertEquals(List.of("test.Holder.note (constant) referred to by test.Outer.inner"),
-				sorted(locations.get(note)));
+		assertEquals(List.of("test.Evt.keyed (pooled)"), sorted(locations.get(keyed)));
+		assertEquals(List.of("test.Holder.note (pooled) referred to by test.Outer.inner"), sorted(locations.get(note)));
 
 		Path output = dir.resolve("output.jfr");
 		RedactionResult result = JfrRedactor.redact(input, output, RuleRedactor.builder()
@@ -245,11 +244,11 @@ class SimpleTypeTest {
 		assertReadsBack(input, "test.Evt", "wrap", "[" + nested + "]");
 		Map<String, List<StringLocation>> locations = locationsOf(input, dir.resolve("unchanged.jfr"),
 				Set.of(first, second, nested));
-		assertEquals(List.of("test.Tags.tags (constant) referred to by test.Holder.texts"),
-				sorted(locations.get(first)), "an array of strings is no single value: an entity");
-		assertEquals(List.of("test.Tags.tags (constant) referred to by test.Holder.texts"),
+		assertEquals(List.of("test.Tags.tags (pooled) referred to by test.Holder.texts"), sorted(locations.get(first)),
+				"an array of strings is no single value: an entity");
+		assertEquals(List.of("test.Tags.tags (pooled) referred to by test.Holder.texts"),
 				sorted(locations.get(second)));
-		assertEquals(List.of("test.Wrap.inner.s (constant) referred to by test.Holder.wrap"),
+		assertEquals(List.of("test.Wrap.inner.s (pooled) referred to by test.Holder.wrap"),
 				sorted(locations.get(nested)), "a struct is no single value: an entity");
 
 		Path output = dir.resolve("output.jfr");
@@ -344,9 +343,8 @@ class SimpleTypeTest {
 				Set.of(inEvent, inConstant, pooled, text));
 		assertEquals(List.of("test.Evt.f.s (inline)"), sorted(locations.get(inEvent)),
 				"the struct's own field: the fold applies to constants referred to through a pool");
-		assertEquals(List.of("test.Ent.g.s (constant) referred to by test.Outer.ent"),
-				sorted(locations.get(inConstant)));
-		assertEquals(List.of("test.Evt.k.key (constant)"), sorted(locations.get(pooled)),
+		assertEquals(List.of("test.Ent.g.s (pooled) referred to by test.Outer.ent"), sorted(locations.get(inConstant)));
+		assertEquals(List.of("test.Evt.k.key (pooled)"), sorted(locations.get(pooled)),
 				"the pool entry behind the inlined struct is a value of the struct's field");
 		assertEquals(List.of("test.Evt.text (inline)"), sorted(locations.get(text)));
 
@@ -417,18 +415,18 @@ class SimpleTypeTest {
 			assertReadsBack(input, "test.Sample", "state", running, running, running);
 			Map<String, List<StringLocation>> locations = locationsOf(input, dir.resolve("unchanged.jfr"),
 					Set.of(interpreted, compiled, inlined, running, sleeping, method, orphan));
-			String frames = "test.StackTrace.frames.type (constant)";
+			String frames = "test.StackTrace.frames.type (pooled)";
 			assertEquals(List.of(frames), sorted(locations.get(compiled)), "rooted: " + rooted);
 			assertEquals(List.of(frames), sorted(locations.get(interpreted)),
 					"key 0 is a frame type, rooted: " + rooted);
-			assertEquals(List.of("test.FrameType.description (constant)"), sorted(locations.get(inlined)),
+			assertEquals(List.of("test.FrameType.description (pooled)"), sorted(locations.get(inlined)),
 					"a frame type no frame has, rooted: " + rooted);
-			assertEquals(List.of("test.Method.name (constant)"), sorted(locations.get(method)),
+			assertEquals(List.of("test.Method.name (pooled)"), sorted(locations.get(method)),
 					"the method stores no string, so the frames referring to it are no referrers, rooted: " + rooted);
-			assertEquals(List.of("test.Method.name (constant)"), sorted(locations.get(orphan)),
+			assertEquals(List.of("test.Method.name (pooled)"), sorted(locations.get(orphan)),
 					"a method no frame refers to, rooted: " + rooted);
-			assertEquals(List.of("test.Sample.state (constant)"), sorted(locations.get(running)), "rooted: " + rooted);
-			assertEquals(List.of("test.ThreadState.name (constant)"), sorted(locations.get(sleeping)),
+			assertEquals(List.of("test.Sample.state (pooled)"), sorted(locations.get(running)), "rooted: " + rooted);
+			assertEquals(List.of("test.ThreadState.name (pooled)"), sorted(locations.get(sleeping)),
 					"a state no sample has, rooted: " + rooted);
 		}
 	}

@@ -95,7 +95,7 @@ public final class JfrRedactor {
 				for (StringLocation location : locations.get(entry)) {
 					if (location == StringLocation.METADATA) {
 						redactedInMetadata.add(value);
-					} else if (!location.isConstant()) {
+					} else if (!location.isPooled()) {
 						changedEventTypes.add(location.getOwner());
 					}
 				}

@@ -477,7 +477,7 @@ class FixtureTest {
 		Set<String> messages = new TreeSet<>();
 		JfrRedactor.redact(input, dir.resolve("input-unchanged.jfr"), (value, locations) -> {
 			for (StringLocation location : locations) {
-				if (!location.getOwner().equals("jdk.CompilerInlining") || location.isConstant()) {
+				if (!location.getOwner().equals("jdk.CompilerInlining") || location.isPooled()) {
 					continue;
 				}
 				boolean type = location.getField().equals("callee.type");
@@ -503,7 +503,7 @@ class FixtureTest {
 		int[] checked = new int[3];
 		JfrRedactor.redact(output, dir.resolve("unchanged.jfr"), (value, locations) -> {
 			for (StringLocation location : locations) {
-				if (!location.getOwner().equals("jdk.CompilerInlining") || location.isConstant()) {
+				if (!location.getOwner().equals("jdk.CompilerInlining") || location.isPooled()) {
 					continue;
 				}
 				switch (location.getField()) {
@@ -569,43 +569,42 @@ class FixtureTest {
 				dir.resolve("unchanged.jfr"));
 		for (int i = 0; i < 3; i++) {
 			assertLocatedAt(locations, "se/hirt/wm/secretpkg/Workload$SecretCustomer" + i, StringLocation::isClassName,
-					"java.lang.Class.name (constant)");
+					"java.lang.Class.name (pooled)");
 		}
 		assertLocatedAt(locations, "computeSecretTotal", StringLocation::isMethodName,
-				"jdk.types.Method.name (constant)");
-		assertLocatedAt(locations, "(I)J", StringLocation::isMethodDescriptor,
-				"jdk.types.Method.descriptor (constant)");
+				"jdk.types.Method.name (pooled)");
+		assertLocatedAt(locations, "(I)J", StringLocation::isMethodDescriptor, "jdk.types.Method.descriptor (pooled)");
 		assertLocatedAt(locations, "se/hirt/wm/secretpkg", StringLocation::isPackageName,
-				"jdk.types.Package.name (constant)");
+				"jdk.types.Package.name (pooled)");
 		assertLocatedAt(locations, "Interpreted", location -> location.getField().equals("type"),
-				"jdk.types.StackFrame.type (constant)");
+				"jdk.types.StackFrame.type (pooled)");
 		assertEquals(Map.of("java.lang.String", 12),
 				unreferencedSimpleConstants(locations, "jdk.types.Symbol", "jdk.types.FrameType", "java.lang.String"),
 				"no symbol or frame type is unreferenced; the pool holds the 11 annotation texts and the empty string");
 		assertLocatedAt(locations, "SecretWorker-0", StringLocation::isThreadName,
-				"java.lang.Thread.javaName (constant)");
-		assertLocatedAt(locations, "SecretOs-0", StringLocation::isThreadName, "java.lang.Thread.osName (constant)");
+				"java.lang.Thread.javaName (pooled)");
+		assertLocatedAt(locations, "SecretOs-0", StringLocation::isThreadName, "java.lang.Thread.osName (pooled)");
 		assertLocatedAt(locations, "SecretGroup", StringLocation::isThreadGroupName,
-				"jdk.types.ThreadGroup.name (constant) referred to by java.lang.Thread.group");
+				"jdk.types.ThreadGroup.name (pooled) referred to by java.lang.Thread.group");
 		// The strings of the events, and of the nested and info structs, which the writer stores as
 		// constants of their own types, referred to by the events and by the info constants
 		Predicate<StringLocation> eventValue = location -> location.getOwner().startsWith("se.hirt.wm.")
-				&& location.isConstant();
+				&& location.isPooled();
 		assertLocatedAt(locations, "secret message number 0 for account 4711", eventValue,
-				"se.hirt.wm.JmcEvent.message (constant)");
-		assertLocatedAt(locations, "Café ÿ Ångström 0", eventValue, "se.hirt.wm.JmcEvent.latin1 (constant)");
-		assertLocatedAt(locations, "漢字Ω 😀 0", eventValue, "se.hirt.wm.JmcEvent.unicode (constant)");
-		assertLocatedAt(locations, "nested secret 0", eventValue, "se.hirt.wm.Nested.secret (constant)");
-		assertLocatedAt(locations, "nested-tag-0", eventValue, "se.hirt.wm.Nested.tags (constant)");
-		assertLocatedAt(locations, "hunter2", eventValue, "se.hirt.wm.Nested.tags (constant)");
-		assertLocatedAt(locations, "pooled label 0", eventValue, "se.hirt.wm.PooledInfo.label (constant)");
+				"se.hirt.wm.JmcEvent.message (pooled)");
+		assertLocatedAt(locations, "Café ÿ Ångström 0", eventValue, "se.hirt.wm.JmcEvent.latin1 (pooled)");
+		assertLocatedAt(locations, "漢字Ω 😀 0", eventValue, "se.hirt.wm.JmcEvent.unicode (pooled)");
+		assertLocatedAt(locations, "nested secret 0", eventValue, "se.hirt.wm.Nested.secret (pooled)");
+		assertLocatedAt(locations, "nested-tag-0", eventValue, "se.hirt.wm.Nested.tags (pooled)");
+		assertLocatedAt(locations, "hunter2", eventValue, "se.hirt.wm.Nested.tags (pooled)");
+		assertLocatedAt(locations, "pooled label 0", eventValue, "se.hirt.wm.PooledInfo.label (pooled)");
 		assertLocatedAt(locations, "pooled nested secret 0", eventValue,
-				"se.hirt.wm.Nested.secret (constant) referred to by se.hirt.wm.PooledInfo.inner");
+				"se.hirt.wm.Nested.secret (pooled) referred to by se.hirt.wm.PooledInfo.inner");
 		assertLocatedAt(locations, "p0", eventValue,
-				"se.hirt.wm.Nested.tags (constant) referred to by se.hirt.wm.PooledInfo.inner");
+				"se.hirt.wm.Nested.tags (pooled) referred to by se.hirt.wm.PooledInfo.inner");
 		// The entries no field refers to, and nothing else, are located at the pool, without referrers
 		Predicate<StringLocation> unreferenced = location -> location.getOwner().equals("java.lang.String")
-				&& location.getField().equals("value") && location.isConstant() && location.getReferrers().isEmpty();
+				&& location.getField().equals("value") && location.isPooled() && location.getReferrers().isEmpty();
 		int unreferencedCount = 0;
 		for (Map.Entry<String, List<StringLocation>> entry : locations.entrySet()) {
 			for (StringLocation location : entry.getValue()) {
@@ -617,11 +616,11 @@ class FixtureTest {
 		}
 		assertEquals(12, unreferencedCount, "unreferenced pool entries: the 11 annotation texts and the empty string");
 		for (String annotation : List.of("jdk.jfr.Timestamp", "A point in time", "Unsigned value")) {
-			assertLocatedAt(locations, annotation, unreferenced, "java.lang.String.value (constant)",
+			assertLocatedAt(locations, annotation, unreferenced, "java.lang.String.value (pooled)",
 					StringLocation.METADATA.toString());
 		}
-		assertLocatedAt(locations, "", unreferenced, "java.lang.String.value (constant)",
-				"se.hirt.wm.JmcEvent.empty (inline)", "se.hirt.wm.Nested.tags (constant)");
+		assertLocatedAt(locations, "", unreferenced, "java.lang.String.value (pooled)",
+				"se.hirt.wm.JmcEvent.empty (inline)", "se.hirt.wm.Nested.tags (pooled)");
 	}
 
 	/**
@@ -647,40 +646,39 @@ class FixtureTest {
 	Path dir) throws Exception {
 		Path input = recording("jdk21-jmc.jfr");
 		Map<String, List<StringLocation>> locations = allLocations(input, dir.resolve("unchanged.jfr"));
-		assertLocatedAt(locations, "java/util/HashMap", StringLocation::isClassName, "java.lang.Class.name (constant)",
+		assertLocatedAt(locations, "java/util/HashMap", StringLocation::isClassName, "java.lang.Class.name (pooled)",
 				"jdk.CompilerInlining.callee.type (inline)");
-		assertLocatedAt(locations, "java/lang/Object", StringLocation::isClassName, "java.lang.Class.name (constant)",
+		assertLocatedAt(locations, "java/lang/Object", StringLocation::isClassName, "java.lang.Class.name (pooled)",
 				"jdk.CompilerInlining.callee.type (inline)");
-		assertLocatedAt(locations, "<init>", StringLocation::isMethodName, "jdk.types.Method.name (constant)",
+		assertLocatedAt(locations, "<init>", StringLocation::isMethodName, "jdk.types.Method.name (pooled)",
 				"jdk.CompilerInlining.callee.name (inline)");
-		assertLocatedAt(locations, "()V", StringLocation::isMethodDescriptor, "jdk.types.Method.descriptor (constant)",
+		assertLocatedAt(locations, "()V", StringLocation::isMethodDescriptor, "jdk.types.Method.descriptor (pooled)",
 				"jdk.CompilerInlining.callee.descriptor (inline)");
-		assertLocatedAt(locations, "java/util", StringLocation::isPackageName, "jdk.types.Package.name (constant)");
-		assertLocatedAt(locations, "java.base", StringLocation::isModuleName, "jdk.types.Module.name (constant)");
+		assertLocatedAt(locations, "java/util", StringLocation::isPackageName, "jdk.types.Package.name (pooled)");
+		assertLocatedAt(locations, "java.base", StringLocation::isModuleName, "jdk.types.Module.name (pooled)");
 		assertNoReferrers(locations, "java.lang.Class", "jdk.types.Method", "jdk.types.Package", "jdk.types.Module",
 				"jdk.types.StackTrace");
-		assertLocatedAt(locations, "JIT compiled", StringLocation::isConstant,
-				"jdk.types.StackTrace.frames.type (constant)");
-		assertLocatedAt(locations, "Interpreted", StringLocation::isConstant,
-				"jdk.types.StackTrace.frames.type (constant)", StringLocation.METADATA.toString());
-		assertLocatedAt(locations, "STATE_RUNNABLE", StringLocation::isConstant, "jdk.ExecutionSample.state (constant)",
-				"jdk.NativeMethodSample.state (constant)");
-		for (String when : List.of("Before GC", "After GC")) {
-			assertLocatedAt(locations, when, StringLocation::isConstant, "jdk.GCHeapSummary.when (constant)",
-					"jdk.G1HeapSummary.when (constant)", "jdk.MetaspaceSummary.when (constant)",
-					"jdk.MetaspaceChunkFreeListSummary.when (constant)");
-		}
-		assertLocatedAt(locations, "Heap Inspection Initiated GC", StringLocation::isConstant,
-				"jdk.GarbageCollection.cause (constant)");
-		assertLocatedAt(locations, "G1New", StringLocation::isConstant,
-				"jdk.GCConfiguration.youngCollector (constant)");
-		assertLocatedAt(locations, "file:///usr/lib/jmc/plugins/org.openjdk.jmc.rjmx_8.3.0.jar",
-				StringLocation::isConstant, "jdk.FinalizerStatistics.codeSource (constant)");
-		assertLocatedAt(locations, "STATE_NEW", StringLocation::isConstant, "jdk.types.ThreadState.name (constant)");
-		assertLocatedAt(locations, "System.gc()", StringLocation::isConstant, "jdk.types.GCCause.cause (constant)",
+		assertLocatedAt(locations, "JIT compiled", StringLocation::isPooled,
+				"jdk.types.StackTrace.frames.type (pooled)");
+		assertLocatedAt(locations, "Interpreted", StringLocation::isPooled, "jdk.types.StackTrace.frames.type (pooled)",
 				StringLocation.METADATA.toString());
-		assertLocatedAt(locations, "Allocation Failure", StringLocation::isConstant,
-				"jdk.types.GCCause.cause (constant)", StringLocation.METADATA.toString());
+		assertLocatedAt(locations, "STATE_RUNNABLE", StringLocation::isPooled, "jdk.ExecutionSample.state (pooled)",
+				"jdk.NativeMethodSample.state (pooled)");
+		for (String when : List.of("Before GC", "After GC")) {
+			assertLocatedAt(locations, when, StringLocation::isPooled, "jdk.GCHeapSummary.when (pooled)",
+					"jdk.G1HeapSummary.when (pooled)", "jdk.MetaspaceSummary.when (pooled)",
+					"jdk.MetaspaceChunkFreeListSummary.when (pooled)");
+		}
+		assertLocatedAt(locations, "Heap Inspection Initiated GC", StringLocation::isPooled,
+				"jdk.GarbageCollection.cause (pooled)");
+		assertLocatedAt(locations, "G1New", StringLocation::isPooled, "jdk.GCConfiguration.youngCollector (pooled)");
+		assertLocatedAt(locations, "file:///usr/lib/jmc/plugins/org.openjdk.jmc.rjmx_8.3.0.jar",
+				StringLocation::isPooled, "jdk.FinalizerStatistics.codeSource (pooled)");
+		assertLocatedAt(locations, "STATE_NEW", StringLocation::isPooled, "jdk.types.ThreadState.name (pooled)");
+		assertLocatedAt(locations, "System.gc()", StringLocation::isPooled, "jdk.types.GCCause.cause (pooled)",
+				StringLocation.METADATA.toString());
+		assertLocatedAt(locations, "Allocation Failure", StringLocation::isPooled, "jdk.types.GCCause.cause (pooled)",
+				StringLocation.METADATA.toString());
 		assertEquals(Map.of("jdk.types.ThreadState", 8, "jdk.types.GCCause", 33, "jdk.types.GCName", 9),
 				unreferencedSimpleConstants(locations, "jdk.types.Symbol", "jdk.types.FrameType", "java.lang.String",
 						"jdk.types.ThreadState", "jdk.types.GCWhen", "jdk.types.GCCause", "jdk.types.GCName"));
@@ -699,27 +697,25 @@ class FixtureTest {
 	Path dir) throws Exception {
 		Path input = recording("jdk9-basic.jfr");
 		Map<String, List<StringLocation>> locations = allLocations(input, dir.resolve("unchanged.jfr"));
-		assertLocatedAt(locations, "java/lang/Object", StringLocation::isClassName, "java.lang.Class.name (constant)");
-		assertLocatedAt(locations, "<init>", StringLocation::isMethodName,
-				"com.oracle.jfr.types.Method.name (constant)");
+		assertLocatedAt(locations, "java/lang/Object", StringLocation::isClassName, "java.lang.Class.name (pooled)");
+		assertLocatedAt(locations, "<init>", StringLocation::isMethodName, "com.oracle.jfr.types.Method.name (pooled)");
 		assertLocatedAt(locations, "()V", StringLocation::isMethodDescriptor,
-				"com.oracle.jfr.types.Method.descriptor (constant)");
+				"com.oracle.jfr.types.Method.descriptor (pooled)");
 		assertLocatedAt(locations, "java/util", StringLocation::isPackageName,
-				"com.oracle.jfr.types.Package.name (constant)");
+				"com.oracle.jfr.types.Package.name (pooled)");
 		assertLocatedAt(locations, "java.base", StringLocation::isModuleName,
-				"com.oracle.jfr.types.Module.name (constant)");
+				"com.oracle.jfr.types.Module.name (pooled)");
 		assertNoReferrers(locations, "java.lang.Class", "com.oracle.jfr.types.Method", "com.oracle.jfr.types.Package",
 				"com.oracle.jfr.types.Module", "com.oracle.jfr.types.StackTrace");
-		assertLocatedAt(locations, "JIT compiled", StringLocation::isConstant,
-				"com.oracle.jfr.types.StackTrace.frames.type (constant)");
-		assertLocatedAt(locations, "Interpreted", StringLocation::isConstant,
-				"com.oracle.jfr.types.StackTrace.frames.type (constant)");
-		assertLocatedAt(locations, "Inlined", StringLocation::isConstant,
-				"com.oracle.jfr.types.FrameType.description (constant)", StringLocation.METADATA.toString());
-		assertLocatedAt(locations, "STATE_RUNNABLE", StringLocation::isConstant,
-				"com.oracle.jfr.types.ThreadState.name (constant)");
-		assertLocatedAt(locations, "Before GC", StringLocation::isConstant,
-				"com.oracle.jfr.types.GCWhen.when (constant)");
+		assertLocatedAt(locations, "JIT compiled", StringLocation::isPooled,
+				"com.oracle.jfr.types.StackTrace.frames.type (pooled)");
+		assertLocatedAt(locations, "Interpreted", StringLocation::isPooled,
+				"com.oracle.jfr.types.StackTrace.frames.type (pooled)");
+		assertLocatedAt(locations, "Inlined", StringLocation::isPooled,
+				"com.oracle.jfr.types.FrameType.description (pooled)", StringLocation.METADATA.toString());
+		assertLocatedAt(locations, "STATE_RUNNABLE", StringLocation::isPooled,
+				"com.oracle.jfr.types.ThreadState.name (pooled)");
+		assertLocatedAt(locations, "Before GC", StringLocation::isPooled, "com.oracle.jfr.types.GCWhen.when (pooled)");
 		assertEquals(Map.of("com.oracle.jfr.types.FrameType", 1, "com.oracle.jfr.types.ThreadState", 9,
 				"com.oracle.jfr.types.GCWhen", 2, "com.oracle.jfr.types.GCCause", 28, "com.oracle.jfr.types.GCName", 9),
 				unreferencedSimpleConstants(locations, "com.oracle.jfr.types.Symbol", "java.lang.String",
@@ -741,15 +737,15 @@ class FixtureTest {
 		Map<String, List<StringLocation>> locations = allLocations(recording("jrockit-r28-transitions.jfr"),
 				dir.resolve("unchanged.jfr"));
 		assertLocatedAt(locations, "java/lang/Object", StringLocation::isClassName,
-				"UTFConstant.utf8 (constant) referred to by Class.name");
+				"UTFConstant.utf8 (pooled) referred to by Class.name");
 		assertLocatedAt(locations, "()V", StringLocation::isMethodDescriptor,
-				"UTFConstant.utf8 (constant) referred to by Method.signature");
+				"UTFConstant.utf8 (pooled) referred to by Method.signature");
 		assertLocatedAt(locations, "main", StringLocation::isMethodName,
-				"UTFConstant.utf8 (constant) referred to by Method.name",
-				"ThreadGroup.name (constant) referred to by JavaThread.group");
-		assertLocatedAt(locations, "STATE_RUNNABLE", StringLocation::isConstant, "ThreadState.name (constant)");
+				"UTFConstant.utf8 (pooled) referred to by Method.name",
+				"ThreadGroup.name (pooled) referred to by JavaThread.group");
+		assertLocatedAt(locations, "STATE_RUNNABLE", StringLocation::isPooled, "ThreadState.name (pooled)");
 		assertLocatedAt(locations, "Main Thread", StringLocation::isThreadName,
-				"Thread.name (constant) referred to by JavaThread.thread, VMThread.thread");
+				"Thread.name (pooled) referred to by JavaThread.thread, VMThread.thread");
 	}
 
 	/**
@@ -796,7 +792,7 @@ class FixtureTest {
 		for (Map.Entry<String, List<StringLocation>> entry : locations.entrySet()) {
 			for (StringLocation location : entry.getValue()) {
 				if (ownerSet.contains(location.getOwner())) {
-					assertTrue(location.isConstant() && location.getReferrers().isEmpty(),
+					assertTrue(location.isPooled() && location.getReferrers().isEmpty(),
 							entry.getKey() + " at " + location);
 					counts.merge(location.getOwner(), 1, Integer::sum);
 				}
@@ -920,7 +916,7 @@ class FixtureTest {
 			}
 			return value;
 		});
-		fields.forEach((value, field) -> assertEquals(List.of(field + " (constant)"),
+		fields.forEach((value, field) -> assertEquals(List.of(field + " (pooled)"),
 				locations.get(value).stream().map(StringLocation::toString).toList(), value));
 
 		Path output = dir.resolve("redacted.jfr");
