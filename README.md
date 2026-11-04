@@ -146,6 +146,19 @@ nested type of the event, as JMC's writer does, that type is the owner.
   untouched on failure.
 - The redactor sees every string exactly, including unpaired UTF-16 surrogates.
 
+## Monitoring
+
+The library emits JFR events, in the category JFR Redact, when a recording of the JVM running it enables them:
+
+| Event | Emitted for |
+|---|---|
+| `se.hirt.jfr.redact.Redaction` | Each redaction, with the input size and the counts of `RedactionResult` |
+| `se.hirt.jfr.redact.Phase` | Each phase of a redaction: `Collect`, `Locate`, `Decide`, `Rewrite` and `Publish` |
+| `se.hirt.jfr.redact.Chunk` | Each chunk parsed or rewritten, with its size and whether it was rewritten |
+
+The events hold sizes, counts and the names of the phases only, never paths or strings of the recording, so a
+recording of the redacting JVM can be shared. Without stack traces, they cost nothing measurable.
+
 ## Test recordings
 
 `src/test/resources/recordings` covers every supported JFR version, written by JRockit, HotSpot and JMC's writer:

@@ -44,6 +44,7 @@ import se.hirt.jfr.redact.parser.ChunkTypes;
 import se.hirt.jfr.redact.parser.ChunkTypes.Type;
 import se.hirt.jfr.redact.parser.RecordingStream;
 import se.hirt.jfr.redact.scan.StringCountMap;
+import se.hirt.jfr.redact.internal.ChunkEvent;
 import se.hirt.jfr.redact.internal.Utf8;
 
 /**
@@ -128,7 +129,12 @@ final class ChunkRewriter {
 
 	void rewrite(ReadableByteChannel input, WritableByteChannel output) throws IOException {
 		reader.reset(input);
-		while (reader.next()) {
+		while (true) {
+			ChunkEvent event = new ChunkEvent(ChunkEvent.REWRITE);
+			event.begin();
+			if (!reader.next()) {
+				break;
+			}
 			chunkCount++;
 			types = reader.types();
 			legacy = reader.legacy();
@@ -152,6 +158,14 @@ final class ChunkRewriter {
 				write(output, out, outSize);
 			} else {
 				write(output, in, reader.size());
+			}
+			if (event.shouldCommit()) {
+				event.index = reader.chunkIndex();
+				event.size = reader.size();
+				event.legacy = legacy;
+				event.rewritten = chunkRewritten;
+				event.outputSize = chunkRewritten ? outSize : reader.size();
+				event.commit();
 			}
 		}
 	}

@@ -41,6 +41,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.Objects;
 
+import se.hirt.jfr.redact.internal.PhaseEvent;
+import se.hirt.jfr.redact.internal.RedactionEvent;
 import se.hirt.jfr.redact.parser.StreamingChunkParser;
 import se.hirt.jfr.redact.scan.StringCountMap;
 
@@ -82,10 +84,16 @@ public final class JfrRedactor {
 		if (Files.exists(destination) && Files.isSameFile(input, destination)) {
 			throw new IOException("Input and output refer to the same file: " + output);
 		}
+		RedactionEvent event = new RedactionEvent();
+		event.begin();
+		PhaseEvent phase = PhaseEvent.start(PhaseEvent.COLLECT);
 		LocationCollector collector = new LocationCollector();
 		new StreamingChunkParser().parse(input, collector);
+		phase.commit();
+		phase = PhaseEvent.start(PhaseEvent.LOCATE);
 		StringCountMap strings = collector.getStrings();
 		List<List<StringLocation>> locations = collector.getLocationsByEntry();
+		phase.commit();
 
 		StringCountMap changedStrings = new StringCountMap();
 		List<String> changedReplacements = new ArrayList<>();
@@ -93,6 +101,7 @@ public final class JfrRedactor {
 		Set<String> changedEventTypes = new HashSet<>();
 		List<String> redactedInMetadata = new ArrayList<>();
 		long redactedCount = 0;
+		phase = PhaseEvent.start(PhaseEvent.DECIDE);
 		for (int entry = 0; entry < strings.size(); entry++) {
 			String value = strings.getString(entry);
 			String replacement = Objects.requireNonNull(redactor.redact(value, locations.get(entry)),
@@ -114,9 +123,11 @@ public final class JfrRedactor {
 				}
 			}
 		}
+		phase.commit();
 
 		try (TemporaryOutput temporary = new TemporaryOutput(destination)) {
 			RedactionResult result;
+			phase = PhaseEvent.start(PhaseEvent.REWRITE);
 			if (redactedCount == 0) {
 				Files.copy(input, temporary.path, StandardCopyOption.REPLACE_EXISTING);
 				result = new RedactionResult(strings.size(), 0, collector.getChunkCount(), 0, 0, 0, 0, List.of());
@@ -135,7 +146,21 @@ public final class JfrRedactor {
 						rewriter.getRewrittenCheckpointCount(), rewriter.getReplacedCount(),
 						Collections.unmodifiableList(redactedInMetadata));
 			}
+			phase.commit();
+			phase = PhaseEvent.start(PhaseEvent.PUBLISH);
 			temporary.publish();
+			phase.commit();
+			if (event.shouldCommit()) {
+				event.inputSize = Files.size(input);
+				event.chunks = result.chunkCount();
+				event.rewrittenChunks = result.rewrittenChunkCount();
+				event.strings = result.stringCount();
+				event.redactedStrings = result.redactedStringCount();
+				event.replacedOccurrences = result.replacedOccurrenceCount();
+				event.rewrittenEvents = result.rewrittenEventCount();
+				event.rewrittenCheckpoints = result.rewrittenCheckpointCount();
+				event.commit();
+			}
 			return result;
 		}
 	}

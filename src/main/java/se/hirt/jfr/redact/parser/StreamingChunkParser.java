@@ -35,6 +35,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 
 import se.hirt.jfr.redact.InvalidRecordingException;
+import se.hirt.jfr.redact.internal.ChunkEvent;
 
 /**
  * Parses a recording one chunk at a time, using a {@link ChunkReader}, so memory use is bounded by
@@ -73,7 +74,12 @@ public final class StreamingChunkParser {
 	public void parse(ReadableByteChannel channel, ChunkParserListener listener) throws IOException {
 		reader.reset(channel);
 		try {
-			while (reader.next()) {
+			while (true) {
+				ChunkEvent event = new ChunkEvent(ChunkEvent.PARSE);
+				event.begin();
+				if (!reader.next()) {
+					break;
+				}
 				listener.onTypes(reader.types());
 				if (reader.legacy()) {
 					parseLegacyEvents(listener);
@@ -81,6 +87,12 @@ public final class StreamingChunkParser {
 					parseEvents(listener);
 				}
 				listener.onChunkEnd();
+				if (event.shouldCommit()) {
+					event.index = reader.chunkIndex();
+					event.size = reader.size();
+					event.legacy = reader.legacy();
+					event.commit();
+				}
 			}
 		} catch (RuntimeException | StackOverflowError e) {
 			throw decodingFailed(e);

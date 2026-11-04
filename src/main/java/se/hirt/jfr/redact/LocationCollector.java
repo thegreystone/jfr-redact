@@ -137,7 +137,6 @@ final class LocationCollector implements ChunkParserListener {
 	/** Distinct (string entry, location id) pairs */
 	private final LongSet pairs = new LongSet(1 << 14);
 	private final Set<String> metadataStrings = new HashSet<>();
-	private int longestMetadataString;
 
 	/** Per checkpoint, in recording order, the string entries stored in it */
 	private int[] checkpointStarts = new int[1024];
@@ -504,28 +503,13 @@ final class LocationCollector implements ChunkParserListener {
 			result.add(new ArrayList<>(2));
 		}
 		pairs.forEach(pair -> result.get((int) (pair >>> 32)).add(locations.get((int) pair)));
+		SubstringIndex metadata = new SubstringIndex(metadataStrings);
 		for (int i = 0; i < strings.size(); i++) {
-			if (occursInMetadata(strings.getString(i))) {
+			if (metadata.occursIn(strings.getString(i))) {
 				result.get(i).add(StringLocation.METADATA);
 			}
 		}
 		return result;
-	}
-
-	private boolean occursInMetadata(String value) {
-		if (metadataStrings.contains(value)) {
-			return true;
-		}
-		// Empty values only match actual empty metadata entries, not every string boundary.
-		if (value.isEmpty() || value.length() >= longestMetadataString) {
-			return false;
-		}
-		for (String metadata : metadataStrings) {
-			if (metadata.contains(value)) {
-				return true;
-			}
-		}
-		return false;
 	}
 
 	/**
@@ -555,7 +539,6 @@ final class LocationCollector implements ChunkParserListener {
 		for (String s : types.getMetadataStrings()) {
 			if (s != null) {
 				metadataStrings.add(s);
-				longestMetadataString = Math.max(longestMetadataString, s.length());
 			}
 		}
 		contextOwners.clear();
