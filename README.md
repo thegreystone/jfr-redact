@@ -8,7 +8,7 @@ Supported formats: JFR 0.9 (JDK 7 and 8, JRockit) and JFR 1.0+ with compressed i
 
 ## Quick start
 
-Build with `mvn package` (JDK 21+). Below, `jfr-redact` stands for `java -jar target/jfr-redact-<version>.jar` or the
+Build with `mvn package` (JDK 25+). Below, `jfr-redact` stands for `java -jar target/jfr-redact-<version>.jar` or the
 native image (see [Building](#building)).
 
 ```
@@ -156,8 +156,26 @@ The library emits JFR events, in the category JFR Redact, when a recording of th
 | `se.hirt.jfr.redact.Phase` | Each phase of a redaction: `Collect`, `Locate`, `Decide`, `Rewrite` and `Publish` |
 | `se.hirt.jfr.redact.Chunk` | Each chunk parsed or rewritten, with its size and whether it was rewritten |
 
-The events hold sizes, counts and the names of the phases only, never paths or strings of the recording, so a
-recording of the redacting JVM can be shared. Without stack traces, they cost nothing measurable.
+The events hold sizes, counts and the names of the phases only, never paths or strings of the recording. Without stack
+traces, they cost nothing measurable. The default JFR settings, however, also record the command line, which names
+the recordings, the environment variables and the system properties. To record a redaction for sharing, use
+`config/jfr-redact.jfc`, which enables the events of the library only:
+
+```
+java -XX:StartFlightRecording=filename=redact.jfr,settings=config/jfr-redact.jfc -jar target/jfr-redact-<version>.jar \
+    redact --hash-thread-names in.jfr out.jfr
+```
+
+The native image supports JFR only if built with `mvn -Pnative,native-jfr package`, which adds
+`--enable-monitoring=jfr` and about 9 MB to the binary. It takes the same option:
+
+```
+target/jfr-redact -XX:StartFlightRecording=filename=redact.jfr,settings=config/jfr-redact.jfc redact ...
+```
+
+Without JFR support, the events cost nothing, and the binary rejects `-XX:StartFlightRecording`. With the profiling
+settings, the native image samples execution too; on macOS it takes the samples at safepoints, so the sampler's own
+frames top each stack, above the frames of the redaction.
 
 ## Test recordings
 
@@ -188,12 +206,15 @@ their size, and hashes strings from the chunk buffer, so that counting a known s
 ## Building
 
 ```
-mvn package                 # JVM build: java -jar target/jfr-redact-<version>.jar
-mvn -Pnative package        # Native image: target/jfr-redact (requires GraalVM as JAVA_HOME)
+mvn package                     # JVM build: java -jar target/jfr-redact-<version>.jar
+mvn -Pnative package            # Native image: target/jfr-redact
+mvn -Pnative,native-jfr package # Native image with JFR support, see Monitoring
 ```
 
+The library requires JDK 25 or later, and the native image GraalVM for JDK 25 or later as `JAVA_HOME`.
+
 Spotless checks the formatting in the `validate` phase: tabs, 120-column code and 100-column comments, with the
-Eclipse profile in `config/formatter/jmc-jev-mcp-formatting.xml`. Run `mvn spotless:apply` to format the sources.
+Eclipse profile in `config/formatter/formatting.xml`. Run `mvn spotless:apply` to format the sources.
 
 ## License
 

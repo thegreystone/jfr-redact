@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Records the events of JFR Redact only: the phases, chunks and totals of each redaction. Unlike the
+  default settings, records no command line, environment variables or system properties, which hold
+  the paths of the recordings and other details of the machine, so the recording can be shared.
+
+  Use: jfr-redact -XX:StartFlightRecording=filename=redact.jfr,settings=config/jfr-redact.jfc redact ...
+-->
+<configuration version="2.0" label="JFR Redact" description="The events of JFR Redact only" provider="JFR Redact">
+  <event name="se.hirt.jfr.redact.Redaction">
+    <setting name="enabled">true</setting>
+    <setting name="threshold">0 ms</setting>
+  </event>
+  <event name="se.hirt.jfr.redact.Phase">
+    <setting name="enabled">true</setting>
+    <setting name="threshold">0 ms</setting>
+  </event>
+  <event name="se.hirt.jfr.redact.Chunk">
+    <setting name="enabled">true</setting>
+    <setting name="threshold">0 ms</setting>
+  </event>
+</configuration>

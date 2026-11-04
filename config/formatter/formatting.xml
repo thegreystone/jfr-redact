@@ -31,7 +31,7 @@ Eclipse JDT formatter profile: tabs, 120 columns, 100-column comments.
 Settings derived from the OpenJDK Mission Control profile. Used by Spotless (see pom.xml).
 -->
 <profiles version="13">
-<profile kind="CodeFormatterProfile" name="jmc-jev-mcp" version="13">
+<profile kind="CodeFormatterProfile" name="formatting" version="13">
 <setting id="org.eclipse.jdt.core.formatter.insert_space_after_ellipsis" value="insert"/>
 <setting id="org.eclipse.jdt.core.formatter.insert_space_after_comma_in_enum_declarations" value="insert"/>
 <setting id="org.eclipse.jdt.core.formatter.insert_new_line_in_empty_annotation_declaration" value="insert"/>

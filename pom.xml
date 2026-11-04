@@ -40,7 +40,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 	<description>Low-cost string redaction for JDK Flight Recorder recordings.</description>
 
 	<properties>
-		<maven.compiler.release>21</maven.compiler.release>
+		<maven.compiler.release>25</maven.compiler.release>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
@@ -92,7 +92,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 							<include>src/test/java/**/*.java</include>
 						</includes>
 						<eclipse>
-							<file>${project.basedir}/config/formatter/jmc-jev-mcp-formatting.xml</file>
+							<file>${project.basedir}/config/formatter/formatting.xml</file>
 						</eclipse>
 						<removeUnusedImports/>
 						<trimTrailingWhitespace/>
@@ -133,7 +133,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 	<profiles>
 		<!--
-		  Native build. Requires GraalVM as JAVA_HOME.
+		  Native build. Requires GraalVM for JDK 25 as JAVA_HOME.
 		  Run: `mvn -Pnative package`, produces target/jfr-redact
 		-->
 		<profile>
@@ -157,13 +157,41 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 						<configuration>
 							<imageName>jfr-redact</imageName>
 							<mainClass>${main.class}</mainClass>
+							<!-- GraalVM 25 has no fallback images, and warns about the no-fallback
+							     option the plugin passes unless this is set. -->
+							<fallback>true</fallback>
 							<buildArgs>
 								<buildArg>-O3</buildArg>
-								<buildArg>--no-fallback</buildArg>
+								<!-- Keeps the messages of implicit exceptions, such as an index out of
+								     bounds, which name the problem with a corrupt recording. -->
+								<buildArg>-H:+UnlockExperimentalVMOptions</buildArg>
+								<buildArg>-H:-ReduceImplicitExceptionStackTraceInformation</buildArg>
+								<buildArg>-H:-UnlockExperimentalVMOptions</buildArg>
 								<!-- Keeps monitoring tools (JMC, IDEs) from attaching to the build JVM and
 								     initializing classes at image build time. -->
 								<buildArg>-J-XX:-UsePerfData</buildArg>
 								<buildArg>-J-XX:+DisableAttachMechanism</buildArg>
+							</buildArgs>
+						</configuration>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+		<!--
+		  Adds JFR support to the native build, for recording the events of the library and of the
+		  runtime. Run: `mvn -Pnative,native-jfr package`
+		-->
+		<profile>
+			<id>native-jfr</id>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.graalvm.buildtools</groupId>
+						<artifactId>native-maven-plugin</artifactId>
+						<version>${native-maven-plugin.version}</version>
+						<configuration>
+							<buildArgs combine.children="append">
+								<buildArg>--enable-monitoring=jfr</buildArg>
 							</buildArgs>
 						</configuration>
 					</plugin>
