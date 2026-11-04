@@ -33,7 +33,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
-import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -45,6 +44,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import se.hirt.jfr.redact.InvalidRecordingException;
 import se.hirt.jfr.redact.JfrRedactor;
 
 class ChunkReaderTest {
@@ -66,13 +66,14 @@ class ChunkReaderTest {
 			reader.reset(channel);
 			assertTrue(reader.next());
 			assertEquals(first.length, reader.size(), "the fixture must provide one larger valid chunk");
-			EOFException failure = assertThrows(EOFException.class, reader::next);
+			InvalidRecordingException failure = assertThrows(InvalidRecordingException.class, reader::next);
 			assertTrue(failure.getMessage() != null && !failure.getMessage().isBlank());
 		}
 		byte[] previousOutput = {1, 2, 3, 4};
 		Path output = Files.write(dir.resolve("output.jfr"), previousOutput);
 		List<String> before = fileNames(dir);
-		assertThrows(EOFException.class, () -> JfrRedactor.redact(input, output, (value, locations) -> "<REDACTED>"));
+		assertThrows(InvalidRecordingException.class,
+				() -> JfrRedactor.redact(input, output, (value, locations) -> "<REDACTED>"));
 		assertArrayEquals(original, Files.readAllBytes(input));
 		assertArrayEquals(previousOutput, Files.readAllBytes(output));
 		assertEquals(before, fileNames(dir), "failed parsing must leave no temporary output files");

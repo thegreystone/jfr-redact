@@ -211,7 +211,8 @@ final class ChunkRewriter {
 	private void rewriteEvent(long eventType, int eventStart, int sizeLength, int eventEnd) throws IOException {
 		Type type = types.getEventType(eventType);
 		if (type == null) {
-			throw new IOException("Event of undeclared type " + eventType + ", cannot guarantee a complete redaction");
+			throw new InvalidRecordingException(
+					"Event of undeclared type " + eventType + ", cannot guarantee a complete redaction");
 		}
 		if (!type.containsStrings || !changedTypes[type.index]) {
 			return;
@@ -328,7 +329,7 @@ final class ChunkRewriter {
 		case ChunkTypes.KIND_VARINT -> stream.skipVarint();
 		case ChunkTypes.KIND_STRING, ChunkTypes.KIND_UTF8, ChunkTypes.KIND_UTF16 -> string(kind);
 		case ChunkTypes.KIND_STRUCT -> collect(types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT));
-		default -> throw new IOException("Unexpected field kind " + kind);
+		default -> throw new InvalidRecordingException("Unexpected field kind " + kind);
 		}
 	}
 
@@ -471,14 +472,14 @@ final class ChunkRewriter {
 		}
 		Integer newOffset = checkpointOffsets.get((int) oldOffset);
 		if (newOffset == null) {
-			throw new IOException("Reference to an unknown or later checkpoint at offset " + oldOffset);
+			throw new InvalidRecordingException("Reference to an unknown or later checkpoint at offset " + oldOffset);
 		}
 		return newOffset;
 	}
 
 	private void checkEnd(int end) throws IOException {
 		if (stream.position() != end) {
-			throw new IOException("Event at offset " + end + " did not decode to its declared size");
+			throw new InvalidRecordingException("Event at offset " + end + " did not decode to its declared size");
 		}
 	}
 

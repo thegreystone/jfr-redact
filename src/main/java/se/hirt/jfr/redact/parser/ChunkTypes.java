@@ -35,6 +35,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import se.hirt.jfr.redact.InvalidRecordingException;
+
 import se.hirt.jfr.redact.parser.ChunkMetadata.ClassElement;
 import se.hirt.jfr.redact.parser.ChunkMetadata.FieldElement;
 
@@ -268,7 +270,7 @@ public final class ChunkTypes {
 			names[i] = field.name;
 			Type fieldType = byId.get(field.typeId);
 			if (fieldType == null) {
-				throw new IOException(
+				throw new InvalidRecordingException(
 						"Field " + element.name + "." + field.name + " has undeclared type id " + field.typeId);
 			}
 			if (field.constantPool) {

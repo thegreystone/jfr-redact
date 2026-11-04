@@ -34,6 +34,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import se.hirt.jfr.redact.InvalidRecordingException;
+
 /** The type declarations of a chunk, read from its metadata event. */
 public final class ChunkMetadata {
 	private final List<ClassElement> classes = new ArrayList<>();
@@ -63,7 +65,7 @@ public final class ChunkMetadata {
 		stream.skipVarint(); // size
 		long typeId = stream.readVarint();
 		if (typeId != 0) {
-			throw new IOException("Expected metadata event, found event type " + typeId);
+			throw new InvalidRecordingException("Expected metadata event, found event type " + typeId);
 		}
 		stream.skipVarint(); // start time
 		stream.skipVarint(); // duration
@@ -159,7 +161,7 @@ public final class ChunkMetadata {
 			return new String(chars);
 		}
 		default:
-			throw new IOException("Unexpected metadata string encoding " + encoding);
+			throw new InvalidRecordingException("Unexpected metadata string encoding " + encoding);
 		}
 	}
 
@@ -167,7 +169,8 @@ public final class ChunkMetadata {
 	private static int readLength(RecordingStream stream) throws IOException {
 		long length = stream.readVarint();
 		if (length < 0 || length > stream.limit() - stream.position()) {
-			throw new IOException("Invalid metadata length " + length + " at offset " + stream.position());
+			throw new InvalidRecordingException(
+					"Invalid metadata length " + length + " at offset " + stream.position());
 		}
 		return (int) length;
 	}

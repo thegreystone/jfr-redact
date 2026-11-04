@@ -31,7 +31,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-import java.io.EOFException;
 import java.io.IOException;
 import java.util.HexFormat;
 import java.util.List;
@@ -41,6 +40,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+
+import se.hirt.jfr.redact.InvalidRecordingException;
 
 class RecordingStreamTest {
 
@@ -53,7 +54,7 @@ class RecordingStreamTest {
 		assertEquals(99, stream.read());
 		stream.reset(reused, 1);
 		assertEquals(42, stream.read());
-		assertThrows(EOFException.class, stream::read);
+		assertThrows(InvalidRecordingException.class, stream::read);
 		assertEquals(1, stream.position(), "a failed read must not advance into stale bytes");
 	}
 
@@ -67,12 +68,13 @@ class RecordingStreamTest {
 		stream.position(2);
 		assertEquals(expected, read.read(stream), name);
 		assertEquals(stream.limit(), stream.position());
-		assertThrows(EOFException.class, () -> read.read(stream));
+		assertThrows(InvalidRecordingException.class, () -> read.read(stream));
 		assertEquals(stream.limit(), stream.position());
 		for (int available = 0; available < width; available++) {
 			stream.reset(buffer, 2 + available);
 			stream.position(2);
-			assertThrows(EOFException.class, () -> read.read(stream), name + " with " + available + " bytes");
+			assertThrows(InvalidRecordingException.class, () -> read.read(stream),
+					name + " with " + available + " bytes");
 			assertEquals(2, stream.position(), "a truncated fixed-width read must not advance");
 		}
 	}
@@ -107,7 +109,7 @@ class RecordingStreamTest {
 			assertEquals(2, stream.position());
 		}
 		for (int amount : List.of(3, Integer.MAX_VALUE)) {
-			assertThrows(EOFException.class, () -> stream.skip(amount));
+			assertThrows(InvalidRecordingException.class, () -> stream.skip(amount));
 			assertEquals(2, stream.position());
 		}
 		for (int position : List.of(-1, Integer.MIN_VALUE, 5, Integer.MAX_VALUE)) {
@@ -131,7 +133,7 @@ class RecordingStreamTest {
 		stream.reset(original, 0);
 		assertEquals(0, stream.position());
 		assertEquals(0, stream.limit());
-		assertThrows(EOFException.class, stream::read);
+		assertThrows(InvalidRecordingException.class, stream::read);
 	}
 
 	@ParameterizedTest(name = "varint {0}")
@@ -144,12 +146,12 @@ class RecordingStreamTest {
 		stream.position(2);
 		assertEquals(expected, stream.readVarint());
 		assertEquals(stream.limit(), stream.position());
-		assertThrows(EOFException.class, stream::readVarint);
+		assertThrows(InvalidRecordingException.class, stream::readVarint);
 		assertEquals(stream.limit(), stream.position());
 		stream.position(2);
 		stream.skipVarint();
 		assertEquals(stream.limit(), stream.position());
-		assertThrows(EOFException.class, stream::skipVarint);
+		assertThrows(InvalidRecordingException.class, stream::skipVarint);
 		assertEquals(stream.limit(), stream.position());
 	}
 
@@ -162,9 +164,9 @@ class RecordingStreamTest {
 		for (int available = 0; available < encoded.length; available++) {
 			stream.reset(buffer, 2 + available);
 			stream.position(2);
-			assertThrows(EOFException.class, stream::readVarint, "available bytes: " + available);
+			assertThrows(InvalidRecordingException.class, stream::readVarint, "available bytes: " + available);
 			assertEquals(2, stream.position(), "a truncated varint read must not advance");
-			assertThrows(EOFException.class, stream::skipVarint, "available bytes: " + available);
+			assertThrows(InvalidRecordingException.class, stream::skipVarint, "available bytes: " + available);
 			assertEquals(2, stream.position(), "a truncated varint skip must not advance");
 		}
 	}

@@ -138,6 +138,10 @@ nested type of the event, as JMC's writer does, that type is the owner.
 - Undeclared event types and values that cannot be decoded while collecting strings fail the redaction, rather than
   risk missing a string. Events that can neither hold nor refer to a string are skipped by their size and copied
   verbatim, without being validated; `scan --validate` checks them.
+- A recording that cannot be processed, because it is corrupt or in an unsupported format, fails with the checked
+  `InvalidRecordingException`, and an incomplete one, such as a copy of a recording still being written, with its
+  subclass `TruncatedRecordingException`. Both are `IOException`s; other `IOException`s are failures to read or write
+  the files. Exceptions thrown by your `StringRedactor` are passed on unchanged.
 - Input and output must be different files. The output is replaced atomically, and an existing output is left
   untouched on failure.
 - The redactor sees every string exactly, including unpaired UTF-16 surrogates.

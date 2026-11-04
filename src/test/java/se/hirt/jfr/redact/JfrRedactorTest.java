@@ -496,6 +496,61 @@ class JfrRedactorTest {
 		assertEquals(before, fileNames(dir), "failed redaction must leave no temporary files");
 	}
 
+	/**
+	 * Each offset is a byte in the metadata of the fixture which, set to 0x7F, makes decoding fail
+	 * with an unchecked exception or a stack overflow, which are reported as the cause of a checked
+	 * exception
+	 */
+	@ParameterizedTest
+	@ValueSource(ints = {101006, 101560, 110258, 121289, 129611})
+	void reportsCorruptRecordingsAsInvalid(int offset, @TempDir
+	Path dir) throws Exception {
+		byte[] bytes = Files.readAllBytes(fixture("jdk9-basic.jfr"));
+		bytes[offset] = 0x7F;
+		Path input = Files.write(dir.resolve("corrupt.jfr"), bytes);
+		Path output = dir.resolve("output.jfr");
+		InvalidRecordingException failure = assertThrows(InvalidRecordingException.class,
+				() -> JfrRedactor.redact(input, output, (value, locations) -> "X"));
+		assertFalse(failure instanceof TruncatedRecordingException, failure.toString());
+		assertTrue(failure.getCause() instanceof RuntimeException || failure.getCause() instanceof StackOverflowError,
+				String.valueOf(failure.getCause()));
+		assertFalse(Files.exists(output));
+	}
+
+	@Test
+	void reportsTruncatedRecordings(@TempDir
+	Path dir) throws Exception {
+		byte[] bytes = Files.readAllBytes(fixture("jdk21-jmc.jfr"));
+		Path truncated = Files.write(dir.resolve("truncated.jfr"), Arrays.copyOf(bytes, bytes.length - 1));
+		assertThrows(TruncatedRecordingException.class,
+				() -> JfrRedactor.redact(truncated, dir.resolve("output.jfr"), (value, locations) -> value));
+		// The JVM writes the size of a chunk when it finishes it
+		Arrays.fill(bytes, 8, 16, (byte) 0);
+		Path inProgress = Files.write(dir.resolve("in-progress.jfr"), bytes);
+		assertThrows(TruncatedRecordingException.class,
+				() -> JfrRedactor.redact(inProgress, dir.resolve("output.jfr"), (value, locations) -> value));
+	}
+
+	@Test
+	void reportsFilesThatAreNoRecordingsAsInvalid(@TempDir
+	Path dir) throws Exception {
+		Path text = Files.writeString(dir.resolve("text.jfr"), "This is not a recording at all");
+		assertThrows(InvalidRecordingException.class,
+				() -> JfrRedactor.redact(text, dir.resolve("output.jfr"), (value, locations) -> value));
+	}
+
+	/** A failing redactor is a failure of the caller's code, not of the recording */
+	@Test
+	void passesOnExceptionsOfTheRedactor(@TempDir
+	Path dir) throws Exception {
+		IllegalStateException thrown = new IllegalStateException("redactor bug");
+		IllegalStateException failure = assertThrows(IllegalStateException.class,
+				() -> JfrRedactor.redact(fixture("jdk9-basic.jfr"), dir.resolve("output.jfr"), (value, locations) -> {
+					throw thrown;
+				}));
+		assertEquals(thrown, failure);
+	}
+
 	@Test
 	void rejectsUnpairedSurrogatesInLegacyUtf8WithoutChangingOutput(@TempDir
 	Path dir) throws Exception {
@@ -508,6 +563,7 @@ class JfrRedactorTest {
 		IOException failure = assertThrows(IOException.class,
 				() -> JfrRedactor.redact(input, output, (value, locations) -> "replacement\uD800"));
 		assertTrue(failure.getMessage().contains("surrogate"), failure.getMessage());
+		assertFalse(failure instanceof InvalidRecordingException, "the recording is valid, the replacement is not");
 		assertArrayEquals(original, Files.readAllBytes(input));
 		assertArrayEquals(previousOutput, Files.readAllBytes(output));
 		assertEquals(before, fileNames(dir), "unsupported legacy encoding must leave no temporary files");

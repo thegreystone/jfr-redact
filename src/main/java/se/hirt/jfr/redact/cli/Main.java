@@ -41,6 +41,7 @@ import java.util.Comparator;
 import java.util.List;
 
 import se.hirt.jfr.redact.parser.StreamingChunkParser;
+import se.hirt.jfr.redact.InvalidRecordingException;
 import se.hirt.jfr.redact.RuleRedactor;
 import se.hirt.jfr.redact.JfrRedactor;
 import se.hirt.jfr.redact.RedactionResult;
@@ -149,13 +150,9 @@ public final class Main {
 		}
 	}
 
-	/**
-	 * Reports a failure to process a recording, which a corrupt recording can cause in many ways,
-	 * as an unchecked exception from the parser or a stack overflow from a type corrupted to
-	 * contain itself
-	 */
-	private static IOException unprocessable(Path recording, Throwable cause) {
-		return new IOException("Could not process " + recording + ", which may be corrupt (" + cause + ")", cause);
+	/** Names the recording in the error line, since the library does not know the file name */
+	private static IOException invalid(Path recording, InvalidRecordingException e) {
+		return new IOException(recording + ": " + e.getMessage(), e);
 	}
 
 	static int run(String[] args, PrintStream out, PrintStream err) throws IOException {
@@ -200,8 +197,8 @@ public final class Main {
 		StringScanner scanner = new StringScanner(validate, references || table || sort == SortOrder.REFERENCES);
 		try {
 			new StreamingChunkParser().parse(recording, scanner);
-		} catch (RuntimeException | StackOverflowError e) {
-			throw unprocessable(recording, e);
+		} catch (InvalidRecordingException e) {
+			throw invalid(recording, e);
 		}
 		long elapsedNanos = System.nanoTime() - start;
 
@@ -282,8 +279,8 @@ public final class Main {
 		RedactionResult result;
 		try {
 			result = JfrRedactor.redact(files.get(0), files.get(1), redactor);
-		} catch (RuntimeException | StackOverflowError e) {
-			throw unprocessable(files.get(0), e);
+		} catch (InvalidRecordingException e) {
+			throw invalid(files.get(0), e);
 		}
 		double millis = (System.nanoTime() - start) / 1e6;
 		out.printf("Redacted %s into %s in %.1f ms%n", files.get(0), files.get(1), millis);

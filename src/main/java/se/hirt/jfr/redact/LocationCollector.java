@@ -572,7 +572,8 @@ final class LocationCollector implements ChunkParserListener {
 	public void onEvent(long typeId, RecordingStream stream, int payloadSize) throws IOException {
 		Type type = types.getEventType(typeId);
 		if (type == null) {
-			throw new IOException("Event of undeclared type " + typeId + ", cannot guarantee a complete redaction");
+			throw new InvalidRecordingException(
+					"Event of undeclared type " + typeId + ", cannot guarantee a complete redaction");
 		}
 		if (!type.containsStrings && !type.containsFoldingReferences) {
 			return;
@@ -607,7 +608,7 @@ final class LocationCollector implements ChunkParserListener {
 			}
 		}
 		if (stream.position() != end) {
-			throw new IOException("Checkpoint did not decode to its declared size");
+			throw new InvalidRecordingException("Checkpoint did not decode to its declared size");
 		}
 	}
 
@@ -798,7 +799,7 @@ final class LocationCollector implements ChunkParserListener {
 			Type struct = types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT);
 			walkEvent(stream, struct, childContext(context, type, field));
 		}
-		default -> throw new IOException("Unexpected field kind " + kind);
+		default -> throw new InvalidRecordingException("Unexpected field kind " + kind);
 		}
 	}
 
@@ -866,7 +867,7 @@ final class LocationCollector implements ChunkParserListener {
 			int child = childContext(context, type, field);
 			walkConstant(stream, struct, child, contextFieldLocations.get(child));
 		}
-		default -> throw new IOException("Unexpected field kind " + kind);
+		default -> throw new InvalidRecordingException("Unexpected field kind " + kind);
 		}
 	}
 
@@ -1111,14 +1112,14 @@ final class LocationCollector implements ChunkParserListener {
 	private Type getPoolType(long typeId) throws IOException {
 		Type type = types.getPoolType(typeId);
 		if (type == null) {
-			throw new IOException("Constant pool for undeclared type id " + typeId);
+			throw new InvalidRecordingException("Constant pool for undeclared type id " + typeId);
 		}
 		return type;
 	}
 
 	private static void checkEnd(RecordingStream stream, int end, Type type) throws IOException {
 		if (stream.position() != end) {
-			throw new IOException("Event " + type.name + " did not decode to its declared size");
+			throw new InvalidRecordingException("Event " + type.name + " did not decode to its declared size");
 		}
 	}
 
@@ -1133,7 +1134,7 @@ final class LocationCollector implements ChunkParserListener {
 		case ChunkTypes.KIND_FIXED2 -> stream.readRawShort();
 		case ChunkTypes.KIND_FIXED4 -> stream.readRawInt();
 		case ChunkTypes.KIND_FIXED8 -> stream.readRawLong();
-		default -> throw new IOException("Unsupported constant pool key kind " + keyKind);
+		default -> throw new InvalidRecordingException("Unsupported constant pool key kind " + keyKind);
 		};
 	}
 }

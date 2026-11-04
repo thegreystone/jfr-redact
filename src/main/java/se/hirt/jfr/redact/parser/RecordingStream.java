@@ -28,11 +28,12 @@
  */
 package se.hirt.jfr.redact.parser;
 
-import java.io.EOFException;
 import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
+
+import se.hirt.jfr.redact.InvalidRecordingException;
 
 /**
  * Cursor over the in-memory bytes of a single chunk. Reads and skips are bounded by the logical
@@ -70,7 +71,7 @@ public final class RecordingStream {
 
 	public void position(int position) throws IOException {
 		if (position < 0 || position > limit) {
-			throw new IOException("Invalid position " + position + " for chunk limit " + limit);
+			throw new InvalidRecordingException("Invalid position " + position + " for chunk limit " + limit);
 		}
 		this.position = position;
 	}
@@ -153,7 +154,7 @@ public final class RecordingStream {
 	}
 
 	/** Fewer than nine bytes remain; check each byte and only commit a complete varint. */
-	private long readVarintNearLimit() throws EOFException {
+	private long readVarintNearLimit() throws InvalidRecordingException {
 		int p = position;
 		long value = 0;
 		for (int shift = 0; p < limit; shift += 7) {
@@ -164,16 +165,16 @@ public final class RecordingStream {
 				return value;
 			}
 		}
-		throw new EOFException("Truncated varint at offset " + position + " in chunk of size " + limit);
+		throw new InvalidRecordingException("Truncated varint at offset " + position + " in chunk of size " + limit);
 	}
 
 	private void require(int bytes) throws IOException {
 		if (bytes < 0) {
-			throw new IOException("Invalid byte count " + bytes + " at offset " + position);
+			throw new InvalidRecordingException("Invalid byte count " + bytes + " at offset " + position);
 		}
 		if (bytes > limit - position) {
-			throw new EOFException("Unexpected end of chunk at offset " + position + ": need " + bytes + " bytes, have "
-					+ (limit - position));
+			throw new InvalidRecordingException("Unexpected end of chunk at offset " + position + ": need " + bytes
+					+ " bytes, have " + (limit - position));
 		}
 	}
 }

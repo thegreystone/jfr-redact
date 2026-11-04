@@ -45,6 +45,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import se.hirt.jfr.redact.InvalidRecordingException;
 import se.hirt.jfr.redact.parser.ChunkTypes.Type;
 
 /**
@@ -94,7 +95,7 @@ final class LegacyMetadata {
 		stream.skip(4); // size
 		int eventType = stream.readRawInt();
 		if (eventType != 0) {
-			throw new IOException("Expected metadata event, found event type " + eventType);
+			throw new InvalidRecordingException("Expected metadata event, found event type " + eventType);
 		}
 		LegacyMetadata metadata = new LegacyMetadata();
 		int producerCount = stream.readRawInt();
@@ -272,13 +273,13 @@ final class LegacyMetadata {
 
 	private static void checkStructIndex(int structIndex, int structCount) throws IOException {
 		if (structIndex < 0 || structIndex >= structCount) {
-			throw new IOException("Invalid data structure index " + structIndex);
+			throw new InvalidRecordingException("Invalid data structure index " + structIndex);
 		}
 	}
 
 	private static int primitiveKind(int dataType) throws IOException {
 		if (dataType < 0 || dataType >= PRIMITIVE_KINDS.length) {
-			throw new IOException("Unexpected data type " + dataType);
+			throw new InvalidRecordingException("Unexpected data type " + dataType);
 		}
 		return PRIMITIVE_KINDS[dataType];
 	}

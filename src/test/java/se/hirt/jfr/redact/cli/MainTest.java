@@ -289,7 +289,7 @@ class MainTest {
 			}
 			String error = errors.toString(StandardCharsets.UTF_8);
 			assertTrue(error.startsWith("Error: ") && error.lines().count() == 1, error);
-			assertTrue(offset < 0 || error.contains(corrupt.toString()), error);
+			assertTrue(error.contains(corrupt.toString()), error);
 		}
 		assertFalse(Files.exists(output));
 	}

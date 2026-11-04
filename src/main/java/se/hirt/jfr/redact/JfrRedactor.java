@@ -64,6 +64,19 @@ public final class JfrRedactor {
 	private JfrRedactor() {
 	}
 
+	/**
+	 * Writes a copy of the recording with the strings replaced as the redactor decides.
+	 *
+	 * @throws InvalidRecordingException
+	 *             if the recording cannot be processed: it is corrupt, in an unsupported format,
+	 *             or, as a {@link TruncatedRecordingException}, incomplete. When decoding fails
+	 *             with an unchecked exception or a stack overflow, which a corrupt recording can
+	 *             cause, the original is the cause. Exceptions thrown by the redactor are passed on
+	 *             as they are.
+	 * @throws IOException
+	 *             if the files cannot be read or written, or a replacement cannot be stored in a
+	 *             JFR 0.9 recording, being too long or holding an unpaired surrogate
+	 */
 	public static RedactionResult redact(Path input, Path output, StringRedactor redactor) throws IOException {
 		Path destination = output.toAbsolutePath();
 		if (Files.exists(destination) && Files.isSameFile(input, destination)) {
@@ -113,6 +126,9 @@ public final class JfrRedactor {
 				try (FileChannel in = FileChannel.open(input, StandardOpenOption.READ);
 						FileChannel out = FileChannel.open(temporary.path, StandardOpenOption.WRITE)) {
 					rewriter.rewrite(in, out);
+				} catch (RuntimeException | StackOverflowError e) {
+					throw new InvalidRecordingException(
+							"Could not decode the recording, which may be corrupt (" + e + ")", e);
 				}
 				result = new RedactionResult(strings.size(), redactedCount, rewriter.getChunkCount(),
 						rewriter.getRewrittenChunkCount(), rewriter.getRewrittenEventCount(),

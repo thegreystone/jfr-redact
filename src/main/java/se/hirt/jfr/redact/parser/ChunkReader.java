@@ -28,10 +28,12 @@
  */
 package se.hirt.jfr.redact.parser;
 
-import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
+
+import se.hirt.jfr.redact.InvalidRecordingException;
+import se.hirt.jfr.redact.TruncatedRecordingException;
 
 /**
  * Reads a recording one chunk at a time into a reusable buffer, and compiles the chunk metadata.
@@ -80,7 +82,8 @@ public final class ChunkReader {
 		stream.reset(buffer, PREAMBLE_SIZE);
 		int magic = stream.readRawInt();
 		if (magic != MAGIC) {
-			throw new IOException(String.format("Not a JFR chunk, bad magic 0x%08X in chunk %d", magic, chunkIndex));
+			throw new InvalidRecordingException(
+					String.format("Not a JFR chunk, bad magic 0x%08X in chunk %d", magic, chunkIndex));
 		}
 		short major = stream.readRawShort();
 		short minor = stream.readRawShort();
@@ -89,7 +92,7 @@ public final class ChunkReader {
 		} else if (major == 1 || major == 2) {
 			readChunk(major, minor);
 		} else {
-			throw new IOException("Unsupported JFR version " + major + "." + minor);
+			throw new InvalidRecordingException("Unsupported JFR version " + major + "." + minor);
 		}
 		return true;
 	}
@@ -100,15 +103,21 @@ public final class ChunkReader {
 		stream.position(PREAMBLE_SIZE);
 		ChunkHeader header = new ChunkHeader(stream, major, minor);
 		if (!header.compressedInts) {
-			throw new IOException("JFR " + major + "." + minor + " without compressed integers is not supported");
+			throw new InvalidRecordingException(
+					"JFR " + major + "." + minor + " without compressed integers is not supported");
+		}
+		if (header.size == 0) {
+			// The JVM writes the size when it finishes the chunk
+			throw new TruncatedRecordingException(
+					"Chunk " + chunkIndex + " is incomplete, recording still in progress?");
 		}
 		if (header.size < ChunkHeader.SIZE || header.size > MAX_CHUNK_SIZE) {
-			throw new IOException("Unsupported size " + header.size + " of chunk " + chunkIndex
-					+ (header.size == 0 ? " (recording still in progress?)" : ""));
+			throw new InvalidRecordingException("Unsupported size " + header.size + " of chunk " + chunkIndex);
 		}
 		int chunkSize = (int) header.size;
 		if (header.metadataOffset < ChunkHeader.SIZE || header.metadataOffset >= chunkSize) {
-			throw new IOException("Invalid metadata offset " + header.metadataOffset + " in chunk " + chunkIndex);
+			throw new InvalidRecordingException(
+					"Invalid metadata offset " + header.metadataOffset + " in chunk " + chunkIndex);
 		}
 		ensureCapacity(chunkSize, ChunkHeader.SIZE);
 		readFully(ChunkHeader.SIZE, chunkSize - ChunkHeader.SIZE, false);
@@ -133,7 +142,7 @@ public final class ChunkReader {
 		stream.position(PREAMBLE_SIZE);
 		long offset = stream.readRawLong();
 		if (offset < LEGACY_HEADER_SIZE || offset > MAX_CHUNK_SIZE - 4) {
-			throw new IOException("Invalid metadata offset " + offset + " in chunk " + chunkIndex);
+			throw new InvalidRecordingException("Invalid metadata offset " + offset + " in chunk " + chunkIndex);
 		}
 		int metadataStart = (int) offset;
 		ensureCapacity(metadataStart + 4, LEGACY_HEADER_SIZE);
@@ -142,7 +151,8 @@ public final class ChunkReader {
 		stream.position(metadataStart);
 		long chunkSize = offset + stream.readRawInt();
 		if (chunkSize <= metadataStart + 4 || chunkSize > MAX_CHUNK_SIZE) {
-			throw new IOException("Invalid metadata size at offset " + metadataStart + " in chunk " + chunkIndex);
+			throw new InvalidRecordingException(
+					"Invalid metadata size at offset " + metadataStart + " in chunk " + chunkIndex);
 		}
 		ensureCapacity((int) chunkSize, metadataStart + 4);
 		readFully(metadataStart + 4, (int) chunkSize - metadataStart - 4, false);
@@ -220,7 +230,7 @@ public final class ChunkReader {
 				if (eofAllowed && target.position() == offset) {
 					return false;
 				}
-				throw new EOFException("Unexpected end of recording");
+				throw new TruncatedRecordingException("Unexpected end of recording");
 			}
 		}
 		return true;

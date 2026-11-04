@@ -33,6 +33,8 @@ import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.nio.ByteOrder;
 
+import se.hirt.jfr.redact.InvalidRecordingException;
+
 import se.hirt.jfr.redact.parser.ChunkParserListener;
 import se.hirt.jfr.redact.parser.ChunkTypes;
 import se.hirt.jfr.redact.parser.ChunkTypes.Type;
@@ -231,7 +233,7 @@ public final class StringScanner implements ChunkParserListener {
 	private Type getPoolType(long typeId) throws IOException {
 		Type type = types.getPoolType(typeId);
 		if (type == null) {
-			throw new IOException("Constant pool for undeclared type id " + typeId);
+			throw new InvalidRecordingException("Constant pool for undeclared type id " + typeId);
 		}
 		return type;
 	}
@@ -296,7 +298,8 @@ public final class StringScanner implements ChunkParserListener {
 		case ChunkTypes.KIND_UTF16 -> readUtf16(stream, category);
 		case ChunkTypes.KIND_STRUCT ->
 			readLegacyFields(stream, types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT).fields, category);
-		default -> throw new IOException("Unexpected field kind " + (op & ChunkTypes.KIND_MASK) + " in JFR 0.9");
+		default ->
+			throw new InvalidRecordingException("Unexpected field kind " + (op & ChunkTypes.KIND_MASK) + " in JFR 0.9");
 		}
 	}
 
@@ -410,7 +413,7 @@ public final class StringScanner implements ChunkParserListener {
 		case ChunkTypes.KIND_FIXED2 -> stream.readRawShort();
 		case ChunkTypes.KIND_FIXED4 -> stream.readRawInt();
 		case ChunkTypes.KIND_FIXED8 -> stream.readRawLong();
-		default -> throw new IOException("Unsupported constant pool key kind " + keyKind);
+		default -> throw new InvalidRecordingException("Unsupported constant pool key kind " + keyKind);
 		};
 	}
 
@@ -475,7 +478,8 @@ public final class StringScanner implements ChunkParserListener {
 			return;
 		}
 		default:
-			throw new IOException("Unknown string encoding " + encoding + " at offset " + (stream.position() - 1));
+			throw new InvalidRecordingException(
+					"Unknown string encoding " + encoding + " at offset " + (stream.position() - 1));
 		}
 	}
 
@@ -527,7 +531,8 @@ public final class StringScanner implements ChunkParserListener {
 			return addEntry(scratch, 0, utf8Length, category);
 		}
 		default:
-			throw new IOException("Unknown string encoding " + encoding + " at offset " + (stream.position() - 1));
+			throw new InvalidRecordingException(
+					"Unknown string encoding " + encoding + " at offset " + (stream.position() - 1));
 		}
 	}
 
@@ -549,7 +554,8 @@ public final class StringScanner implements ChunkParserListener {
 
 	private static void checkLength(RecordingStream stream, long byteLength) throws IOException {
 		if (byteLength < 0 || byteLength > stream.limit() - stream.position()) {
-			throw new IOException("Invalid string length " + byteLength + " at offset " + stream.position());
+			throw new InvalidRecordingException(
+					"Invalid string length " + byteLength + " at offset " + stream.position());
 		}
 	}
 

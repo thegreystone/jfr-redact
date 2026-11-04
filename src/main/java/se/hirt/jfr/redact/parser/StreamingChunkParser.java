@@ -34,6 +34,8 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 
+import se.hirt.jfr.redact.InvalidRecordingException;
+
 /**
  * Parses a recording one chunk at a time, using a {@link ChunkReader}, so memory use is bounded by
  * the largest chunk rather than the recording. The metadata, normally found at the end of the
@@ -46,6 +48,13 @@ public final class StreamingChunkParser {
 
 	private final ChunkReader reader = new ChunkReader();
 
+	/**
+	 * Parses the recording in the file.
+	 *
+	 * @throws InvalidRecordingException
+	 *             if the recording is invalid, see
+	 *             {@link #parse(ReadableByteChannel, ChunkParserListener)}
+	 */
 	public void parse(Path path, ChunkParserListener listener) throws IOException {
 		try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
 			parse(channel, listener);
@@ -54,18 +63,38 @@ public final class StreamingChunkParser {
 
 	/**
 	 * Parses the recording read from the channel. The channel is not closed.
+	 *
+	 * @throws InvalidRecordingException
+	 *             if the recording is corrupt, truncated or in an unsupported format, also when the
+	 *             parser or the listener, which decodes the events, fails with an unchecked
+	 *             exception or a stack overflow, which a corrupt recording can cause; the original
+	 *             is the cause
 	 */
 	public void parse(ReadableByteChannel channel, ChunkParserListener listener) throws IOException {
 		reader.reset(channel);
-		while (reader.next()) {
-			listener.onTypes(reader.types());
-			if (reader.legacy()) {
-				parseLegacyEvents(listener);
-			} else {
-				parseEvents(listener);
+		try {
+			while (reader.next()) {
+				listener.onTypes(reader.types());
+				if (reader.legacy()) {
+					parseLegacyEvents(listener);
+				} else {
+					parseEvents(listener);
+				}
+				listener.onChunkEnd();
 			}
-			listener.onChunkEnd();
+		} catch (RuntimeException | StackOverflowError e) {
+			throw decodingFailed(e);
 		}
+	}
+
+	/**
+	 * Reports an unexpected failure while decoding a recording, which a corrupt recording can cause
+	 * in many ways, such as an index out of bounds, or a stack overflow from a type corrupted to
+	 * contain itself
+	 */
+	private static InvalidRecordingException decodingFailed(Throwable cause) {
+		return new InvalidRecordingException("Could not decode the recording, which may be corrupt (" + cause + ")",
+				cause);
 	}
 
 	private void parseEvents(ChunkParserListener listener) throws IOException {
@@ -76,8 +105,8 @@ public final class StreamingChunkParser {
 			stream.position(eventStart);
 			long eventSize = stream.readVarint();
 			if (eventSize <= 0 || eventSize > size - eventStart) {
-				throw new IOException("Invalid event size " + eventSize + " at offset " + eventStart + " in chunk "
-						+ reader.chunkIndex());
+				throw new InvalidRecordingException("Invalid event size " + eventSize + " at offset " + eventStart
+						+ " in chunk " + reader.chunkIndex());
 			}
 			int eventEnd = eventStart + (int) eventSize;
 			dispatch(listener, stream, stream.readVarint(), eventEnd);
@@ -93,8 +122,8 @@ public final class StreamingChunkParser {
 			stream.position(eventStart);
 			int eventSize = stream.readRawInt();
 			if (eventSize < 8 || eventSize > metadataStart - eventStart) {
-				throw new IOException("Invalid event size " + eventSize + " at offset " + eventStart + " in chunk "
-						+ reader.chunkIndex());
+				throw new InvalidRecordingException("Invalid event size " + eventSize + " at offset " + eventStart
+						+ " in chunk " + reader.chunkIndex());
 			}
 			int eventEnd = eventStart + eventSize;
 			dispatch(listener, stream, stream.readRawInt(), eventEnd);

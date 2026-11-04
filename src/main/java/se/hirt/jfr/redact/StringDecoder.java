@@ -132,7 +132,8 @@ final class StringDecoder {
 			return STRING;
 		}
 		default:
-			throw new IOException("Unknown string encoding " + encoding + " at offset " + (stream.position() - 1));
+			throw new InvalidRecordingException(
+					"Unknown string encoding " + encoding + " at offset " + (stream.position() - 1));
 		}
 	}
 
@@ -150,7 +151,8 @@ final class StringDecoder {
 
 	private static void checkLength(RecordingStream stream, long byteLength) throws IOException {
 		if (byteLength < 0 || byteLength > stream.limit() - stream.position()) {
-			throw new IOException("Invalid string length " + byteLength + " at offset " + stream.position());
+			throw new InvalidRecordingException(
+					"Invalid string length " + byteLength + " at offset " + stream.position());
 		}
 	}
 
