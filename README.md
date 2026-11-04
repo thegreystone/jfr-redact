@@ -90,11 +90,11 @@ rule rewrites the names it covers, and the first `--replace` or `--match` matchi
 | `(.*)` | `com.acme.secret.Foo` | `<hash>.<hash>.<hash>.<hash>` | `<hash>.<hash>.<hash>` |
 | `(.*)Impl$` | `com.acme.secret.FooImpl` | `com.acme.secret.<hash>Impl` | unchanged |
 
-Class names are also replaced in array class names, method descriptors, thread dumps, old-object descriptions and
-`jdk.CompilerInlining` events. A package is matched on its own, followed by a dot, and only the first match counts, so
-`(secret)$` changes nothing (write `(secret)\.`). Class names in free text, such as JVM arguments and exception
-messages, or in the fields of your own events are not recognized: reach them with `--replace` or `--match`, and check
-the result with `jfr-redact scan`.
+Class names are also replaced in array class names, method descriptors, thread dumps, old-object descriptions,
+`jdk.CompilerInlining` events, and the exception and allocation classes of Datadog's events. A package is matched on
+its own, followed by a dot, and only the first match counts, so `(secret)$` changes nothing (write `(secret)\.`).
+Class names in free text, such as JVM arguments and exception messages, or in the fields of your own events are not
+recognized: reach them with `--replace` or `--match`, and check the result with `jfr-redact scan`.
 
 The hashes are not keyed, so guessable names such as `main` or `util` can be found by hashing guesses. The Java API
 has keyed variants, such as `hashClassNames(regex, key)`. The Javadoc of `RuleRedactor.Builder` details every rule.

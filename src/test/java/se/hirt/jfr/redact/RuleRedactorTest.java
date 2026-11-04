@@ -1811,6 +1811,114 @@ class RuleRedactorTest {
 				() -> RuleRedactor.builder().replaceMatching("(", "<R>"));
 	}
 
+	/**
+	 * Profilers that take class names from JVMTI write the names of hidden classes as its
+	 * signatures do, the internal name of the host and the address after a dot. They are hashed by
+	 * their host class, segment by segment, keeping the address, so a class gets the same hash as
+	 * in the source form the JDK writes, also in array class names and descriptors.
+	 */
+	@Test
+	void hashesHiddenClassesInTheFormOfJvmtiSignatures() {
+		String address = "0x00007fb87c2252f8";
+		for (String regex : List.of("com\\.acme\\.(.*)", "(.*)")) {
+			RuleRedactor redactor = RuleRedactor.builder().hashClassNames(regex).build();
+			String source = redactor.redact("com.acme.secret.Foo$$Lambda/" + address, List.of(CLASS_NAME));
+			String signature = redactor.redact("com/acme/secret/Foo$$Lambda." + address, List.of(CLASS_NAME));
+			assertTrue(signature.endsWith("." + address) && !signature.contains("secret"), signature);
+			assertEquals(source.substring(0, source.length() - address.length() - 1).replace('.', '/'),
+					signature.substring(0, signature.length() - address.length() - 1), regex);
+			assertEquals("[[L" + signature + ";",
+					redactor.redact("[[Lcom/acme/secret/Foo$$Lambda." + address + ";", List.of(CLASS_NAME)), regex);
+			assertEquals("(L" + signature + ";I)V",
+					redactor.redact("(Lcom/acme/secret/Foo$$Lambda." + address + ";I)V", List.of(DESCRIPTOR)), regex);
+		}
+		String hashed = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").build()
+				.redact("com/acme/secret/Foo$$Lambda." + address, List.of(CLASS_NAME));
+		assertTrue(hashed.matches("com/acme/" + HASH + "/" + HASH + "\\." + address), hashed);
+		assertEquals(hash("Gen$$Lambda") + "." + address,
+				EVERYTHING.redact("Gen$$Lambda." + address, List.of(CLASS_NAME)),
+				"a hidden class in the default package");
+	}
+
+	/**
+	 * The classes of exceptions and allocations in Datadog's events are class names in source form,
+	 * inline or pooled, hashed like the class constants; the other strings of those events are not
+	 */
+	@Test
+	void classifiesTheClassFieldsOfDatadogEventsAsClassNames() {
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").build();
+		String constant = redactor.redact("com/acme/secret/SecretException", List.of(CLASS_NAME)).replace('/', '.');
+		for (boolean pooled : new boolean[] {false, true}) {
+			for (String[] ownerAndField : new String[][] {{"datadog.ExceptionSample", "type"},
+					{"datadog.ExceptionCount", "type"}, {"datadog.DirectAllocationSample", "allocatingClass"},
+					{"datadog.DirectAllocationTotal", "allocatingClass"}}) {
+				StringLocation location = new StringLocation(ownerAndField[0], ownerAndField[1], pooled, List.of());
+				assertOnlyClassName(location);
+				assertEquals(constant, redactor.redact("com.acme.secret.SecretException", List.of(location)),
+						location.toString());
+			}
+			for (StringLocation other : List.of(
+					new StringLocation("datadog.ExceptionSample", "message", pooled, List.of()),
+					new StringLocation("datadog.Endpoint", "endpoint", pooled, List.of()),
+					new StringLocation("test.Exception", "type", pooled, List.of()))) {
+				assertTrue(!other.isClassName(), other.toString());
+			}
+		}
+	}
+
+	/**
+	 * The type of a Datadog exception sample, written through the JDK's event writer, which inlines
+	 * the first copy and pools the repeated ones, is hashed in every copy
+	 */
+	@Test
+	void hashesTheExceptionTypesOfDatadogEventsInEveryCopy(@TempDir
+	Path dir) throws Exception {
+		String type = "com.acme.secret.SecretPaymentException";
+		Path input = dir.resolve("input.jfr");
+		try (Recording recording = new Recording()) {
+			recording.enable(DatadogExceptionSampleEvent.class);
+			recording.start();
+			for (int i = 0; i < 5; i++) {
+				DatadogExceptionSampleEvent event = new DatadogExceptionSampleEvent();
+				event.type = type;
+				event.commit();
+			}
+			recording.stop();
+			recording.dump(input);
+		}
+		List<String> locations = new ArrayList<>();
+		JfrRedactor.redact(input, dir.resolve("unchanged.jfr"), (value, list) -> {
+			if (value.equals(type)) {
+				list.forEach(location -> locations.add(location.toString()));
+			}
+			return value;
+		});
+		assertTrue(locations.contains("datadog.ExceptionSample.type (pooled)"),
+				"the input must pool the type: " + locations);
+		RuleRedactor redactor = RuleRedactor.builder().hashClassNames("com\\.acme\\.(.*)").build();
+		Path output = dir.resolve("output.jfr");
+		JfrRedactor.redact(input, output, redactor);
+		String expected = redactor.redact(type,
+				List.of(new StringLocation("datadog.ExceptionSample", "type", true, List.of())));
+		assertTrue(expected.matches("com\\.acme\\." + HASH + "\\." + HASH), expected);
+		int events = 0;
+		for (RecordedEvent event : RecordingFile.readAllEvents(output)) {
+			if (event.getEventType().getName().equals("datadog.ExceptionSample")) {
+				assertEquals(expected, event.getString("type"));
+				events++;
+			}
+		}
+		assertEquals(5, events);
+		List<String> remaining = new ArrayList<>();
+		JfrRedactor.redact(output, dir.resolve("check.jfr"), (value, list) -> {
+			if (value.contains("Secret")) {
+				remaining.add(value);
+			}
+			return value;
+		});
+		assertEquals(List.of(), remaining);
+	}
+
 	/** The class name hashed by the redactor, in source form as it appears in thread dumps */
 	private static String hashedSource(RuleRedactor redactor, String className) {
 		String hashed = redactor.redact(className.replace('.', '/'), List.of(CLASS_NAME));
@@ -1877,6 +1985,13 @@ class RuleRedactorTest {
 	@StackTrace(true)
 	static class WorkEvent extends Event {
 		String description;
+	}
+
+	/** Like the exception samples of Datadog's tracer */
+	@Name("datadog.ExceptionSample")
+	@StackTrace(false)
+	static class DatadogExceptionSampleEvent extends Event {
+		String type;
 	}
 
 	@Test

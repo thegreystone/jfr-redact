@@ -74,6 +74,13 @@ public final class StringLocation {
 			"name"};
 	private static final String[] MODULE_NAME_FIELDS = {"jdk.types.Module", "name", "com.oracle.jfr.types.Module",
 			"name"};
+	/**
+	 * The fields of Datadog's events holding class names in source form, such as
+	 * {@code com.acme.SecretException}, inline or pooled
+	 */
+	private static final String[] DATADOG_CLASS_NAME_FIELDS = {"datadog.ExceptionSample", "type",
+			"datadog.ExceptionCount", "type", "datadog.DirectAllocationSample", "allocatingClass",
+			"datadog.DirectAllocationTotal", "allocatingClass"};
 	/** The JFR 0.9 fields referring to the interned strings of class and method names */
 	private static final String[] LEGACY_CLASS_NAME_REFERRERS = {"Class.name"};
 	private static final String[] LEGACY_METHOD_NAME_REFERRERS = {"Method.name"};
@@ -176,11 +183,15 @@ public final class StringLocation {
 	 *         whether the writer stored it in a {@code jdk.types.Symbol} or in the string pool, the
 	 *         class of the inlined method of a {@code jdk.CompilerInlining} event
 	 *         ({@code com.oracle.jdk.CompilerInlining} in JDK 9 and 10), which is written inline,
-	 *         or in JFR 0.9 a constant referred to by {@code Class.name}
+	 *         or in JFR 0.9 a constant referred to by {@code Class.name}; or in source form such as
+	 *         {@code java.util.HashMap}, the class of an exception or allocation in Datadog's
+	 *         events: {@code datadog.ExceptionSample.type}, {@code datadog.ExceptionCount.type} and
+	 *         the {@code allocatingClass} of {@code datadog.DirectAllocationSample} and
+	 *         {@code datadog.DirectAllocationTotal}, inline or pooled
 	 */
 	public boolean isClassName() {
 		return isPooledValueOf(CLASS_NAME_FIELDS) || isReferredToBy(LEGACY_CLASS_NAME_REFERRERS)
-				|| isCompilerInliningCallee("callee.type");
+				|| isCompilerInliningCallee("callee.type") || isValueOf(DATADOG_CLASS_NAME_FIELDS);
 	}
 
 	/**
@@ -238,9 +249,11 @@ public final class StringLocation {
 
 	/** True if this is a pooled value of one of the fields, given as owner and field pairs */
 	private boolean isPooledValueOf(String[] ownersAndFields) {
-		if (!pooled) {
-			return false;
-		}
+		return pooled && isValueOf(ownersAndFields);
+	}
+
+	/** True if this is a value of one of the fields, given as owner and field pairs */
+	private boolean isValueOf(String[] ownersAndFields) {
 		for (int i = 0; i < ownersAndFields.length; i += 2) {
 			if (owner.equals(ownersAndFields[i]) && field.equals(ownersAndFields[i + 1])) {
 				return true;
