@@ -63,8 +63,9 @@ public final class ChunkTypes {
 	/** JFR 0.9 string: int char count followed by UTF-16 */
 	public static final int KIND_UTF16 = 8;
 	/**
-	 * Reference to a constant that contains strings, only used in {@link Type#referenceFields}. The
-	 * type index of the constant pool is in the upper bits, and the key is encoded as the pool's
+	 * Reference to a constant, only used in {@link Type#referenceFields} and
+	 * {@link Type#locationFields}, for the references each program follows. The type index of the
+	 * constant pool is in the upper bits, and the key is encoded as the pool's
 	 * {@link Type#keyKind}.
 	 */
 	public static final int KIND_REF = 9;
@@ -98,6 +99,33 @@ public final class ChunkTypes {
 		public int[] referenceFields;
 		/** True if a value of this type can contain a reference to a constant containing strings */
 		public boolean containsReferences;
+		/**
+		 * True if a constant of this type folds into the fields referring to it: every reader reads
+		 * the constant as its one value, so that value belongs to the referring fields and is
+		 * located there. The {@value ChunkTypes#STRING_TYPE} pool folds by definition, referred to
+		 * through the encoding of a string, and so does a type the metadata declares simple whose
+		 * one field is a scalar string, inline or a key into the string pool, or a reference to
+		 * another folding type, a chain. A declared simple type over an array, a struct, a number
+		 * or a cycle is an entity, whose strings are located at its own field.
+		 */
+		public boolean folds;
+		/**
+		 * True if a value of this type can contain a reference to a folding constant, directly or
+		 * through inline structs: a String field declared with a constant pool, whose values are
+		 * keys into the string pool, or a field of a simple type, such as the state of a sample.
+		 */
+		public boolean containsFoldingReferences;
+		/**
+		 * Like {@link #referenceFields}, the program counting references to stored strings, but
+		 * also with the references to the folding types storing no string of their own, the chains
+		 * of simple types, encoded as {@link ChunkTypes#KIND_REF}: the program locating the strings
+		 * of a recording, which follows every reference to a constant holding strings, inline or
+		 * folded, and leaves the references to the other entities, such as the method of a stack
+		 * frame, as numbers to skip. Only set after {@link ChunkTypes#prepareReferences()}.
+		 */
+		public int[] locationFields;
+		/** Declared {@code simpleType}, see {@link ChunkMetadata.ClassElement#simpleType} */
+		boolean simpleType;
 		/**
 		 * Per field, the type index of the referenced constant pool, or -1. Null if no references.
 		 */
@@ -139,11 +167,14 @@ public final class ChunkTypes {
 		}
 		this.stringTypeIndex = stringIndex;
 		computeContainsStrings();
+		computeFolding();
+		computeContainsFoldingReferences();
 	}
 
 	/**
-	 * Compiles {@link Type#referenceFields} and {@link Type#containsReferences}, which are only
-	 * computed on demand since they are only needed to count references.
+	 * Compiles {@link Type#referenceFields}, {@link Type#containsReferences} and
+	 * {@link Type#locationFields}, which are only computed on demand since they are only needed to
+	 * count references and to locate the strings of a recording.
 	 */
 	public void prepareReferences() {
 		if (referencesPrepared) {
@@ -151,6 +182,7 @@ public final class ChunkTypes {
 		}
 		compileReferenceFields();
 		computeContainsReferences();
+		compileLocationFields();
 		referencesPrepared = true;
 	}
 
@@ -160,6 +192,7 @@ public final class ChunkTypes {
 		Map<Long, Type> byId = new HashMap<>(classes.size() * 2);
 		for (ClassElement c : classes) {
 			Type type = new Type(types.size(), c.id, c.name, STRING_TYPE.equals(c.name), KIND_VARINT);
+			type.simpleType = c.simpleType;
 			types.add(type);
 			byId.put(c.id, type);
 		}
@@ -345,6 +378,97 @@ public final class ChunkTypes {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * The least fixpoint of {@link Type#folds}: the string pool folds, then every declared simple
+	 * type whose one scalar field is a string or refers to a type that folds already, until nothing
+	 * changes. The types of a cycle never reach a string, so they stay entities, and the chains of
+	 * folding types form a hierarchy, which bounds the links the collector follows. Whether the
+	 * type has a supertype is not considered: the JDK's parser reads any type declared simple as
+	 * its one value.
+	 */
+	private void computeFolding() {
+		for (Type t : types) {
+			t.folds = t.isString;
+		}
+		boolean changed = true;
+		while (changed) {
+			changed = false;
+			for (Type t : types) {
+				if (!t.folds && foldsIntoItsField(t)) {
+					t.folds = true;
+					changed = true;
+				}
+			}
+		}
+	}
+
+	private boolean foldsIntoItsField(Type t) {
+		if (!t.simpleType || t.fields.length != 1 || (t.fields[0] & ARRAY_FLAG) != 0) {
+			return false;
+		}
+		int target = t.refTargets == null ? -1 : t.refTargets[0];
+		if (target >= 0) {
+			return types[target].folds && isKeyCompatible(t.fields[0], types[target]);
+		}
+		return (t.fields[0] & KIND_MASK) == KIND_STRING;
+	}
+
+	private void computeContainsFoldingReferences() {
+		boolean changed = true;
+		while (changed) {
+			changed = false;
+			for (Type t : types) {
+				if (!t.containsFoldingReferences && anyFieldRefersToFolding(t)) {
+					t.containsFoldingReferences = true;
+					changed = true;
+				}
+			}
+		}
+	}
+
+	private boolean anyFieldRefersToFolding(Type t) {
+		for (int i = 0; i < t.fields.length; i++) {
+			int op = t.fields[i];
+			if ((op & KIND_MASK) == KIND_STRUCT) {
+				if (types[op >>> TYPE_SHIFT].containsFoldingReferences) {
+					return true;
+				}
+			} else if (t.refTargets != null && t.refTargets[i] >= 0 && types[t.refTargets[i]].folds
+					&& isKeyCompatible(op, types[t.refTargets[i]])) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * The program locating strings follows the references of {@link Type#referenceFields}, to the
+	 * constants storing strings, and also those to the folding types storing none, the chains of
+	 * simple types, whose values are the values of the referring fields all the same. A reference
+	 * to any other type, an entity whose strings are all folded from the constants it refers to,
+	 * such as a class, whose name is a symbol, or a method, is left as a number: its constants have
+	 * no referrers, see {@link se.hirt.jfr.redact.StringLocation#getReferrers()}.
+	 */
+	private void compileLocationFields() {
+		for (Type t : types) {
+			int[] targets = t.refTargets;
+			t.locationFields = t.referenceFields;
+			if (targets == null) {
+				continue;
+			}
+			for (int i = 0; i < targets.length; i++) {
+				int target = targets[i];
+				if (target >= 0 && types[target].folds && !types[target].containsStrings
+						&& isKeyCompatible(t.fields[i], types[target])) {
+					if (t.locationFields == t.referenceFields) {
+						t.locationFields = t.referenceFields.clone();
+					}
+					t.locationFields[i] = KIND_REF | (t.fields[i] & ARRAY_FLAG) | (target << TYPE_SHIFT);
+				}
+			}
+		}
 	}
 
 	private static final class IdLookup {

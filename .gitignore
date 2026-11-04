@@ -16,8 +16,9 @@ dependency-reduced-pom.xml
 .settings/
 .factorypath
 
-# Logs
+# Logs, rotated ones too
 *.log
+*.log.*
 hs_err_pid*
 replay_pid*
 

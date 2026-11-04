@@ -1,10 +1,10 @@
 jfr-redact
 Copyright (C) 2026 Marcus Hirt
 
-The streaming chunk parser in se.hirt.jfr.redact.parser was inspired by the
-streaming JFR chunk parser in the OpenJDK JDK Mission Control project,
-https://github.com/openjdk/jmc, available under the Universal Permissive
-License v 1.0 or the BSD 3-Clause License.
+The chunk reader and the streaming chunk parser in se.hirt.jfr.redact.parser
+were inspired by ChunkReader and StreamingChunkParser in the OpenJDK JDK
+Mission Control project, https://github.com/openjdk/jmc, available under the
+Universal Permissive License v 1.0 or the BSD 3-Clause License.
 
 Four of the test recordings in src/test/resources/recordings come from the test resources of
 the OpenJDK JDK Mission Control project, https://github.com/openjdk/jmc, available

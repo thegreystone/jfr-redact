@@ -36,6 +36,7 @@ import java.util.Base64;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
@@ -48,8 +49,8 @@ import javax.crypto.spec.SecretKeySpec;
 import se.hirt.jfr.redact.internal.Utf8;
 
 /**
- * A {@link StringRedactor} applying simple rules, without regular expressions. Rules are tried in
- * order, and the first matching rule decides. The kinds of rules are:
+ * A {@link StringRedactor} applying rules. Rules are tried in order, and the first matching rule
+ * decides. The kinds of rules are:
  * <ul>
  * <li>{@link Builder#hashThreadNames()} replaces thread names with {@code Thread-<hash>} and thread
  * group names with {@code ThreadGroup-<hash>}.</li>
@@ -66,6 +67,8 @@ import se.hirt.jfr.redact.internal.Utf8;
  * ({@code java/util/HashMap}), and in method descriptors and array class names
  * ({@code (Ljava/util/List;)V}, {@code [Ljava/util/HashMap;}).</li>
  * <li>{@link Builder#replace(String, String)} replaces strings matching a glob pattern.</li>
+ * <li>{@link Builder#replaceMatching(String, String)} replaces strings containing a match of a
+ * regular expression.</li>
  * </ul>
  * A pattern may start and/or end with {@code *}, which matches any characters, so matching is
  * always one of {@code equals}, {@code startsWith}, {@code endsWith} or {@code contains}:
@@ -192,6 +195,21 @@ public final class RuleRedactor implements StringRedactor {
 		}
 
 		/**
+		 * Adds a rule replacing every string containing a match of the regular expression, as a
+		 * whole, with the replacement, as {@code --match} does on the command line. Thread dumps
+		 * and old object descriptions are matched as the preceding rules rewrote them.
+		 *
+		 * @throws java.util.regex.PatternSyntaxException
+		 *             if the expression is invalid
+		 */
+		public Builder replaceMatching(String regex, String replacement) {
+			Pattern pattern = Pattern.compile(regex);
+			Objects.requireNonNull(replacement, "replacement");
+			rules.add((value, locations) -> pattern.matcher(value).find() ? replacement : null);
+			return this;
+		}
+
+		/**
 		 * Adds a rule replacing every thread name with {@code Thread-} and the first 8 hex digits
 		 * of the SHA-256 of the name, and every thread group name with {@code ThreadGroup-} and the
 		 * same hash of the group name, since group names often mirror the thread names they
@@ -264,10 +282,11 @@ public final class RuleRedactor implements StringRedactor {
 		 * descriptors of {@code jdk.CompilerInlining} events. Array prefixes and descriptor
 		 * delimiters are preserved, and primitive arrays are unchanged. A hidden class, such as
 		 * {@code com.acme.Foo$$Lambda/0x00007fb87c2252f8}, is matched by its host class,
-		 * {@code com.acme.Foo$$Lambda}, and the address or identity hash the JVM appends in each
-		 * run is kept, so that the class gets the same hash in every form, and from JDK 21 on in
-		 * every run, while JDK 8 to 20 number their lambda proxy classes per run, as in
-		 * {@code Foo$$Lambda$269} and {@code Foo$$Lambda$14}. The same text always gets the same
+		 * {@code com.acme.Foo$$Lambda}, also in the form of JVMTI class signatures,
+		 * {@code com/acme/Foo$$Lambda.0x00007fb87c2252f8}, and the address or identity hash the JVM
+		 * appends in each run is kept, so that the class gets the same hash in every form, and from
+		 * JDK 21 on in every run, while JDK 8 to 20 number their lambda proxy classes per run, as
+		 * in {@code Foo$$Lambda$269} and {@code Foo$$Lambda$14}. The same text always gets the same
 		 * hash. Free text naming classes or packages is not touched: module locations
 		 * ({@code jrt:/jdk.jfr}), JVM arguments, exception messages, paths and the like.
 		 * <p>
@@ -867,9 +886,11 @@ public final class RuleRedactor implements StringRedactor {
 		 * The suffix of a hidden class in internal form, as in descriptors and array class names,
 		 * {@code com/acme/Foo$$Lambda+0x00007fb87c2252f8}: the address alone. The identity hash is
 		 * only appended to names in source form, so a trailing {@code /<digits>} segment of an
-		 * internal name is a class or package name.
+		 * internal name is a class or package name. JVMTI class signatures separate the address
+		 * with a dot instead, {@code com/acme/Foo$$Lambda.0x00007fb87c2252f8}, as written by
+		 * profilers that take class names from JVMTI.
 		 */
-		private static final Pattern INTERNAL_HIDDEN_CLASS_SUFFIX = Pattern.compile("\\+0x[0-9a-fA-F]+$");
+		private static final Pattern INTERNAL_HIDDEN_CLASS_SUFFIX = Pattern.compile("[+.]0x[0-9a-fA-F]+$");
 		private static final String OLD_OBJECT_CLASS_NAME = "Class Name: ";
 
 		/**
@@ -1131,9 +1152,11 @@ public final class RuleRedactor implements StringRedactor {
 		 *            {@code true} if the name is known to be in internal form, as in a descriptor,
 		 *            or {@code false} to decide by the name: a name without dots is in internal
 		 *            form if a slash precedes its suffix, or if its only slash starts a suffix that
-		 *            is more likely a class name, see {@link #isClassOfSingleSegmentPackage}. A
-		 *            dotted name may end in a slash segment that is no suffix, and a name in the
-		 *            default package has no separator to decide by, which the suffix grammar does.
+		 *            is more likely a class name, see {@link #isClassOfSingleSegmentPackage}, and
+		 *            so is a name whose only dot starts the suffix of a JVMTI signature, see
+		 *            {@link #INTERNAL_HIDDEN_CLASS_SUFFIX}. A dotted name may end in a slash
+		 *            segment that is no suffix, and a name in the default package has no separator
+		 *            to decide by, which the suffix grammar does.
 		 * @return the renamed name with the hash of the expression that renamed it, or {@code null}
 		 *         if no expression matches
 		 */
@@ -1144,8 +1167,10 @@ public final class RuleRedactor implements StringRedactor {
 				if (name.indexOf('/') >= 0 || name.indexOf('+') >= 0) {
 					hostEnd = suffixStart(HIDDEN_CLASS_SUFFIX, name);
 				}
-				internal = name.indexOf('.') < 0
-						&& (name.lastIndexOf('/', hostEnd - 1) >= 0 || isClassOfSingleSegmentPackage(name, hostEnd));
+				int dot = name.indexOf('.');
+				internal = dot < 0
+						&& (name.lastIndexOf('/', hostEnd - 1) >= 0 || isClassOfSingleSegmentPackage(name, hostEnd))
+						|| dot >= 0 && dot == suffixStart(INTERNAL_HIDDEN_CLASS_SUFFIX, name);
 			}
 			if (internal) {
 				hostEnd = suffixStart(INTERNAL_HIDDEN_CLASS_SUFFIX, name);

@@ -39,13 +39,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
-import java.util.regex.Pattern;
 
 import se.hirt.jfr.redact.parser.StreamingChunkParser;
 import se.hirt.jfr.redact.RuleRedactor;
 import se.hirt.jfr.redact.JfrRedactor;
 import se.hirt.jfr.redact.RedactionResult;
-import se.hirt.jfr.redact.StringRedactor;
 import se.hirt.jfr.redact.scan.StringCountMap;
 import se.hirt.jfr.redact.scan.StringScanner;
 
@@ -102,8 +100,8 @@ public final class Main {
 			                        internal form (java/util/List) and descriptors. Can be repeated
 			  --replace <pattern> <replacement>
 			                        Replace strings matching a pattern, which may start and/or end with *,
-			                        as in --replace 'java.util.*' 'utilz.*'. A * in the replacement is the
-			                        matched remainder. Can be repeated
+			                        as in --replace '/home/alice/*' '/home/user/*'. A * in the replacement is
+			                        the matched remainder. Can be repeated
 			  --match <regex>       Replace strings containing a match of the regular expression with the
 			                        --replacement text. Can be repeated
 			  --replacement <text>  Replacement for --match (default <REDACTED>)
@@ -212,35 +210,35 @@ public final class Main {
 	}
 
 	private static int redact(String[] args, PrintStream out, PrintStream err) throws IOException {
-		List<Pattern> patterns = new ArrayList<>();
-		RuleRedactor.Builder globs = RuleRedactor.builder();
-		boolean anyGlob = false;
+		List<String> matches = new ArrayList<>();
+		RuleRedactor.Builder rules = RuleRedactor.builder();
+		boolean anyRule = false;
 		String replacement = "<REDACTED>";
 		List<Path> files = new ArrayList<>();
 		for (int i = 1; i < args.length; i++) {
 			switch (args[i]) {
-			case "--match" -> patterns.add(Pattern.compile(requireValue(args, ++i)));
+			case "--match" -> matches.add(requireValue(args, ++i));
 			case "--hash-class-names" -> {
-				globs.hashClassNames(requireValue(args, ++i));
-				anyGlob = true;
+				rules.hashClassNames(requireValue(args, ++i));
+				anyRule = true;
 			}
 			case "--hash-method-names" -> {
-				globs.hashMethodNames(requireValue(args, ++i));
-				anyGlob = true;
+				rules.hashMethodNames(requireValue(args, ++i));
+				anyRule = true;
 			}
 			case "--hash-thread-names" -> {
-				globs.hashThreadNames();
-				anyGlob = true;
+				rules.hashThreadNames();
+				anyRule = true;
 			}
 			case "--rename-package" -> {
 				String packageName = requireValue(args, ++i);
-				globs.renamePackage(packageName, requireValue(args, ++i));
-				anyGlob = true;
+				rules.renamePackage(packageName, requireValue(args, ++i));
+				anyRule = true;
 			}
 			case "--replace" -> {
 				String pattern = requireValue(args, ++i);
-				globs.replace(pattern, requireValue(args, ++i));
-				anyGlob = true;
+				rules.replace(pattern, requireValue(args, ++i));
+				anyRule = true;
 			}
 			case "--replacement" -> replacement = requireValue(args, ++i);
 			default -> {
@@ -253,21 +251,16 @@ public final class Main {
 			}
 			}
 		}
-		if (files.size() != 2 || (patterns.isEmpty() && !anyGlob)) {
+		if (files.size() != 2 || (matches.isEmpty() && !anyRule)) {
 			err.print(USAGE);
 			return 2;
 		}
-		String fixedReplacement = replacement;
-		StringRedactor regexRedactor = (value, locations) -> {
-			for (Pattern pattern : patterns) {
-				if (pattern.matcher(value).find()) {
-					return fixedReplacement;
-				}
-			}
-			return value;
-		};
+		// After parsing, since --match comes last and --replacement may follow it
+		for (String regex : matches) {
+			rules.replaceMatching(regex, replacement);
+		}
 		long start = System.nanoTime();
-		RedactionResult result = JfrRedactor.redact(files.get(0), files.get(1), globs.build().orElse(regexRedactor));
+		RedactionResult result = JfrRedactor.redact(files.get(0), files.get(1), rules.build());
 		double millis = (System.nanoTime() - start) / 1e6;
 		out.printf("Redacted %s into %s in %.1f ms%n", files.get(0), files.get(1), millis);
 		out.printf("Strings: %,d of %,d redacted, %,d stored occurrences replaced%n", result.redactedStringCount(),

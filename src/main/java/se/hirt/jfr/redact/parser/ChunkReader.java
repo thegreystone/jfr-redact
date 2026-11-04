@@ -35,7 +35,7 @@ import java.nio.channels.ReadableByteChannel;
 
 /**
  * Reads a recording one chunk at a time into a reusable buffer, and compiles the chunk metadata.
- * Supports JFR 0.9 (JDK 7 and 8) and JFR 1.0+ with compressed integers (JDK 11+ and 8u262+). Not
+ * Supports JFR 0.9 (JDK 7 and 8) and JFR 1.0+ with compressed integers (JDK 9+ and 8u262+). Not
  * thread-safe.
  */
 public final class ChunkReader {

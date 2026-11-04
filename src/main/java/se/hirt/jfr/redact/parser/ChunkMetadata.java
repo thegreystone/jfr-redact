@@ -43,6 +43,11 @@ public final class ChunkMetadata {
 	public static final class ClassElement {
 		public long id;
 		public String name;
+		/**
+		 * Declared {@code simpleType}: the JDK writes it for a type with exactly one field and no
+		 * supertype, and its parser reads a constant of such a type as the value of that field
+		 */
+		public boolean simpleType;
 		public final List<FieldElement> fields = new ArrayList<>();
 	}
 
@@ -109,6 +114,7 @@ public final class ChunkMetadata {
 				switch (key) {
 				case "id" -> classElement.id = Long.parseLong(value);
 				case "name" -> classElement.name = value;
+				case "simpleType" -> classElement.simpleType = Boolean.parseBoolean(value);
 				default -> {
 				}
 				}

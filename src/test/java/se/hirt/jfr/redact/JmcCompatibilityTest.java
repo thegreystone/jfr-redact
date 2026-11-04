@@ -43,8 +43,11 @@ import se.hirt.jfr.redact.examples.RedactPatientData;
 /**
  * Loads redacted recordings with JDK Mission Control's parser, which derives the simple name of a
  * class from the name of its package and so requires every class name to start with the name of its
- * package, see {@link JmcModel}. Every fixture is checked, the JRockit recording too, which JMC
- * reads as well, although JFR 0.9 stores no package names.
+ * package, see {@link JmcModel}. Every fixture is checked: the JRockit recording too, which JMC
+ * reads as well, although JFR 0.9 stores no package names, and the recording of JMC's own writer,
+ * whose class and package names are stored through {@code jdk.types.Symbol} constants and the
+ * {@code java.lang.String} pool, both read as the value of the field referring to them, and hashed
+ * all the same.
  */
 class JmcCompatibilityTest {
 	@ParameterizedTest

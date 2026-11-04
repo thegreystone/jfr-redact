@@ -28,17 +28,46 @@
  */
 package se.hirt.jfr.redact;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import java.io.IOException;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import jdk.jfr.consumer.RecordedEvent;
 import jdk.jfr.consumer.RecordingFile;
 
-/** Reads recordings the way the tests compare them: through the JDK's parser */
+/** Reads recordings the way the tests compare them: through the JDK's parser, and as raw bytes */
 final class TestRecordings {
 	private TestRecordings() {
+	}
+
+	/**
+	 * Asserts that no copy of the values remains in the file, in any of the encodings a recording
+	 * stores strings in: UTF-8, UTF-16 and Latin-1
+	 */
+	static void assertAbsent(Path file, String ... values) throws IOException {
+		byte[] bytes = Files.readAllBytes(file);
+		for (String value : values) {
+			for (Charset charset : List.of(StandardCharsets.UTF_8, StandardCharsets.UTF_16BE,
+					StandardCharsets.ISO_8859_1)) {
+				assertTrue(indexOf(bytes, value.getBytes(charset)) < 0, value + " remains, as " + charset);
+			}
+		}
+	}
+
+	private static int indexOf(byte[] haystack, byte[] needle) {
+		for (int i = 0, last = haystack.length - needle.length; i <= last; i++) {
+			if (haystack[i] == needle[0] && Arrays.equals(haystack, i, i + needle.length, needle, 0, needle.length)) {
+				return i;
+			}
+		}
+		return -1;
 	}
 
 	/** @return the texts of the thread dump events of the recording, in order */
