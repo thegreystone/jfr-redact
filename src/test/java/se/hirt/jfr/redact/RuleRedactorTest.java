@@ -262,9 +262,12 @@ class RuleRedactorTest {
 
 	private static List<StringLocation> compositeLocations() {
 		return List.of(new StringLocation("jdk.ThreadDump", "result", false, List.of()),
+				new StringLocation("com.oracle.jdk.ThreadDump", "result", false, List.of()),
 				new StringLocation("vm/runtime/thread_dump", "result", false, List.of()),
 				new StringLocation("jdk.types.OldObject", "description", true, List.of()),
-				new StringLocation("jdk.types.OldObjectGcRoot", "description", true, List.of()));
+				new StringLocation("jdk.types.OldObjectGcRoot", "description", true, List.of()),
+				new StringLocation("com.oracle.jfr.types.OldObject", "description", true, List.of()),
+				new StringLocation("com.oracle.jfr.types.OldObjectGcRoot", "description", true, List.of()));
 	}
 
 	private static String compositeText(StringLocation location) {
@@ -340,6 +343,43 @@ class RuleRedactorTest {
 		assertTrue(found);
 		String raw = new String(java.nio.file.Files.readAllBytes(output), java.nio.charset.StandardCharsets.ISO_8859_1);
 		assertTrue(!raw.contains(secretName));
+	}
+
+	@Test
+	void replacesEachMatchKeepingTheRest() {
+		RuleRedactor redactor = RuleRedactor.builder().replaceEachMatch("\\d{4}", "$x\\").replace("*", "other").build();
+		assertEquals("pin $x\\ and $x\\", redactor.redact("pin 1234 and 5678"));
+		assertEquals("other", redactor.redact("no digits"), "a string without a match is left to later rules");
+	}
+
+	/**
+	 * In a thread dump, each match is replaced after the rules before it rewrote the dump, and the
+	 * rules after it see the result, unlike a redactor chained with {@code orElse}, which is not
+	 * asked about a dump the first redactor changed
+	 */
+	@Test
+	void replacesEachMatchInThreadDumpsRewrittenByNameRules() {
+		String dump = """
+				"worker" #1 prio=5 os_prio=31 tid=0x0000000000000001 nid=1 runnable
+				\tat com.acme.Mailer.send(Mailer.java:12)
+				\t- locked <0x000000076b4d8f88> (a java.lang.String)
+				Sending to alice@example.com
+				""";
+		StringLocation threadName = new StringLocation("java.lang.Thread", "javaName", true, List.of());
+		String worker = RuleRedactor.builder().hashThreadNames().build().redact("worker", List.of(threadName));
+		String expected = dump.replace("\"worker\"", '"' + worker + '"').replace("alice@example.com", "<EMAIL>");
+		String email = "[\\w.+-]+@[\\w-]+(\\.[\\w-]+)+";
+
+		RuleRedactor oneRedactor = RuleRedactor.builder().hashThreadNames().replaceEachMatch(email, "<EMAIL>")
+				.replaceMatching("<EMAIL>", "seen by later rules").build();
+		assertEquals("seen by later rules", oneRedactor.redact(dump, List.of(THREAD_DUMP)));
+		assertEquals(expected, RuleRedactor.builder().hashThreadNames().replaceEachMatch(email, "<EMAIL>").build()
+				.redact(dump, List.of(THREAD_DUMP)));
+
+		StringRedactor chained = RuleRedactor.builder().hashThreadNames().build()
+				.orElse(RuleRedactor.builder().replaceEachMatch(email, "<EMAIL>").build());
+		assertTrue(chained.redact(dump, List.of(THREAD_DUMP)).contains("alice@example.com"),
+				"orElse does not ask the second redactor about a dump the first changed");
 	}
 
 	@Test
@@ -1796,7 +1836,7 @@ class RuleRedactorTest {
 		String inline = redactor.redact(dump, List.of(THREAD_DUMP));
 		assertTrue(!inline.contains("\"worker\""), inline);
 		for (boolean constant : new boolean[] {false, true}) {
-			for (String owner : List.of("jdk.ThreadDump", "vm/runtime/thread_dump")) {
+			for (String owner : List.of("jdk.ThreadDump", "com.oracle.jdk.ThreadDump", "vm/runtime/thread_dump")) {
 				StringLocation result = new StringLocation(owner, "result", constant, List.of());
 				assertTrue(result.isThreadDump() && result.isComposite(), result.toString());
 				assertEquals(inline, redactor.redact(dump, List.of(result)), result.toString());

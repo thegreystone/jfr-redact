@@ -281,21 +281,31 @@ public final class StringLocation {
 
 	/**
 	 * @return {@code true} if this is the text of a thread dump, which contains thread names and
-	 *         class names: {@code jdk.ThreadDump.result} in JFR 1.0+,
+	 *         class names: {@code jdk.ThreadDump.result} in JDK 11+,
+	 *         {@code com.oracle.jdk.ThreadDump.result} in JDK 9 and 10 and
 	 *         {@code vm/runtime/thread_dump.result} in JFR 0.9, wherever the writer stored it;
 	 *         HotSpot inlines it in the event
 	 */
 	public boolean isThreadDump() {
-		return field.equals("result") && (owner.equals("jdk.ThreadDump") || owner.equals("vm/runtime/thread_dump"));
+		return field.equals("result") && switch (owner) {
+		case "jdk.ThreadDump", "com.oracle.jdk.ThreadDump", "vm/runtime/thread_dump" -> true;
+		default -> false;
+		};
 	}
 
 	/**
 	 * @return {@code true} if this is the description of an old object sample or its GC root, such
-	 *         as {@code Thread Name: main}
+	 *         as {@code Thread Name: main}: {@code jdk.types.OldObject} and
+	 *         {@code jdk.types.OldObjectGcRoot} in JDK 11+, {@code com.oracle.jfr.types.OldObject}
+	 *         and {@code com.oracle.jfr.types.OldObjectGcRoot} in JDK 10
 	 */
 	public boolean isOldObjectDescription() {
-		return pooled && field.equals("description")
-				&& (owner.equals("jdk.types.OldObject") || owner.equals("jdk.types.OldObjectGcRoot"));
+		return pooled && field.equals("description") && switch (owner) {
+		case "jdk.types.OldObject", "jdk.types.OldObjectGcRoot", "com.oracle.jfr.types.OldObject",
+				"com.oracle.jfr.types.OldObjectGcRoot" ->
+			true;
+		default -> false;
+		};
 	}
 
 	/**

@@ -30,7 +30,6 @@ package se.hirt.jfr.redact.examples;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.regex.Pattern;
 
 import se.hirt.jfr.redact.JfrRedactor;
 import se.hirt.jfr.redact.RedactionResult;
@@ -50,14 +49,14 @@ import se.hirt.jfr.redact.StringRedactor;
  * se.hirt.jfr.redact.examples.RedactPatientData <recording.jfr> <redacted.jfr>}
  */
 public final class RedactPatientData {
-	private static final Pattern EMAIL = Pattern.compile("[\\w.+-]+@[\\w-]+(\\.[\\w-]+)+");
+	private static final String EMAIL = "[\\w.+-]+@[\\w-]+(\\.[\\w-]+)+";
 
 	private RedactPatientData() {
 	}
 
 	public static StringRedactor redactor() {
-		return RuleRedactor.builder().hashThreadNames().hashClassNames("com\\.bea\\.medrec\\.(.*)").build()
-				.orElse((value, locations) -> EMAIL.matcher(value).replaceAll("<EMAIL>"));
+		return RuleRedactor.builder().hashThreadNames().hashClassNames("com\\.bea\\.medrec\\.(.*)")
+				.replaceEachMatch(EMAIL, "<EMAIL>").build();
 	}
 
 	public static void main(String[] args) throws IOException {

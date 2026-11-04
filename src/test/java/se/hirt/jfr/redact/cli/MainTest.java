@@ -40,6 +40,7 @@ import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +48,8 @@ import java.util.Properties;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import jdk.jfr.Event;
 import jdk.jfr.Name;
@@ -256,6 +259,39 @@ class MainTest {
 		String strings = stringsOf(output, dir.resolve("output.tsv"));
 		assertFalse(strings.contains("Full thread dump"), "a thread dump remains");
 		assertTrue(strings.contains("<REDACTED>"), "the thread dumps are replaced");
+	}
+
+	/**
+	 * A corrupt recording fails with an error line naming it and the exit code 1, not a stack
+	 * trace, and writes no output. Each offset is a byte in the metadata of the fixture which, set
+	 * to 0x7F, makes the parser fail differently: an index out of bounds, a number format, a null
+	 * pointer, a type containing itself, and an index out of bounds again. The negative offset
+	 * truncates the recording.
+	 */
+	@ParameterizedTest
+	@ValueSource(ints = {101006, 101560, 110258, 121289, 129611, -1})
+	void reportsCorruptRecordingsAsErrors(int offset, @TempDir
+	Path dir) throws Exception {
+		byte[] bytes = Files.readAllBytes(recording());
+		if (offset < 0) {
+			bytes = Arrays.copyOf(bytes, bytes.length / 2);
+		} else {
+			bytes[offset] = 0x7F;
+		}
+		Path corrupt = Files.write(dir.resolve("corrupt.jfr"), bytes);
+		Path output = dir.resolve("redacted.jfr");
+		for (String[] args : List.of(new String[] {"scan", corrupt.toString()},
+				new String[] {"redact", "--hash-class-names", "(.*)", corrupt.toString(), output.toString()})) {
+			ByteArrayOutputStream errors = new ByteArrayOutputStream();
+			try (PrintStream out = new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8);
+					PrintStream err = new PrintStream(errors, true, StandardCharsets.UTF_8)) {
+				assertEquals(1, Main.execute(args, out, err), args[0]);
+			}
+			String error = errors.toString(StandardCharsets.UTF_8);
+			assertTrue(error.startsWith("Error: ") && error.lines().count() == 1, error);
+			assertTrue(offset < 0 || error.contains(corrupt.toString()), error);
+		}
+		assertFalse(Files.exists(output));
 	}
 
 	private static String stringsOf(Path recording, Path tsv) throws Exception {

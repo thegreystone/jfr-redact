@@ -72,6 +72,8 @@ import se.hirt.jfr.redact.internal.Utf8;
  * <li>{@link Builder#replace(String, String)} replaces strings matching a glob pattern.</li>
  * <li>{@link Builder#replaceMatching(String, String)} replaces strings containing a match of a
  * regular expression.</li>
+ * <li>{@link Builder#replaceEachMatch(String, String)} replaces each match of a regular expression
+ * within strings.</li>
  * </ul>
  * A pattern may start and/or end with {@code *}, which matches any characters, so matching is
  * always one of {@code equals}, {@code startsWith}, {@code endsWith} or {@code contains}:
@@ -124,9 +126,10 @@ import se.hirt.jfr.redact.internal.Utf8;
  * {@code Thread Name:} of old object descriptions, thread group names in their
  * {@code Thread Group:}, class names in the frames and lock objects of thread dumps and in the
  * {@code Class Name:} of old object descriptions, module names in the locations of the frames,
- * method names in the frames, and packages in class names. Glob and location-based rules match the
- * whole current text, including preceding rewrites, and the first matching whole-string rule
- * decides. Location predicates see all locations of the value.
+ * method names in the frames, and packages in class names, and
+ * {@link Builder#replaceEachMatch(String, String)} rewrites each match. Glob, regular expression
+ * and location-based rules match the whole current text, including preceding rewrites, and the
+ * first matching whole-string rule decides. Location predicates see all locations of the value.
  * <p>
  * Since a decision applies to every occurrence of a string, a rule matching a string at one
  * location replaces it everywhere. For example, hashing the thread name {@code main} also renames
@@ -209,6 +212,21 @@ public final class RuleRedactor implements StringRedactor {
 			Pattern pattern = Pattern.compile(regex);
 			Objects.requireNonNull(replacement, "replacement");
 			rules.add((value, locations) -> pattern.matcher(value).find() ? replacement : null);
+			return this;
+		}
+
+		/**
+		 * Adds a rule replacing each match of the regular expression with the replacement, and
+		 * keeping the rest of the string, such as {@code [\w.+-]+@[\w-]+(\.[\w-]+)+} replacing the
+		 * e-mail addresses in logged SQL statements. The replacement is literal: {@code $} and
+		 * {@code \} have no special meaning. In thread dumps and old object descriptions, the rule
+		 * rewrites the text like the specialized rules do, and the following rules see the result.
+		 *
+		 * @throws java.util.regex.PatternSyntaxException
+		 *             if the expression is invalid
+		 */
+		public Builder replaceEachMatch(String regex, String replacement) {
+			rules.add(new EachMatchRule(Pattern.compile(regex), replacement));
 			return this;
 		}
 
@@ -567,6 +585,29 @@ public final class RuleRedactor implements StringRedactor {
 						: parts[0] + value.substring(0, value.length() - text.length()) + parts[1];
 			}
 			return value.equals(text) ? parts[0] : null;
+		}
+	}
+
+	/** Replaces each match of an expression, keeping the rest of the string */
+	private static final class EachMatchRule implements Rule {
+		private final Pattern pattern;
+		private final String replacement;
+
+		EachMatchRule(Pattern pattern, String replacement) {
+			this.pattern = pattern;
+			this.replacement = Matcher.quoteReplacement(Objects.requireNonNull(replacement, "replacement"));
+		}
+
+		@Override
+		public String apply(String value, List<StringLocation> locations) {
+			Matcher m = pattern.matcher(value);
+			return m.find() ? m.replaceAll(replacement) : null;
+		}
+
+		@Override
+		public String rewriteComposite(String text, StringLocation location) {
+			Matcher m = pattern.matcher(text);
+			return m.find() ? m.replaceAll(replacement) : text;
 		}
 	}
 

@@ -136,12 +136,26 @@ public final class Main {
 	}
 
 	public static void main(String[] args) {
+		System.exit(execute(args, System.out, System.err));
+	}
+
+	/** Runs the command, reporting a failure as an error line and the exit code 1 */
+	static int execute(String[] args, PrintStream out, PrintStream err) {
 		try {
-			System.exit(run(args, System.out, System.err));
+			return run(args, out, err);
 		} catch (IOException | IllegalArgumentException e) {
-			System.err.println("Error: " + e.getMessage());
-			System.exit(1);
+			err.println("Error: " + e.getMessage());
+			return 1;
 		}
+	}
+
+	/**
+	 * Reports a failure to process a recording, which a corrupt recording can cause in many ways,
+	 * as an unchecked exception from the parser or a stack overflow from a type corrupted to
+	 * contain itself
+	 */
+	private static IOException unprocessable(Path recording, Throwable cause) {
+		return new IOException("Could not process " + recording + ", which may be corrupt (" + cause + ")", cause);
 	}
 
 	static int run(String[] args, PrintStream out, PrintStream err) throws IOException {
@@ -184,7 +198,11 @@ public final class Main {
 
 		long start = System.nanoTime();
 		StringScanner scanner = new StringScanner(validate, references || table || sort == SortOrder.REFERENCES);
-		new StreamingChunkParser().parse(recording, scanner);
+		try {
+			new StreamingChunkParser().parse(recording, scanner);
+		} catch (RuntimeException | StackOverflowError e) {
+			throw unprocessable(recording, e);
+		}
 		long elapsedNanos = System.nanoTime() - start;
 
 		printSummary(out, recording, scanner, elapsedNanos);
@@ -259,8 +277,14 @@ public final class Main {
 		for (String regex : matches) {
 			rules.replaceMatching(regex, replacement);
 		}
+		RuleRedactor redactor = rules.build();
 		long start = System.nanoTime();
-		RedactionResult result = JfrRedactor.redact(files.get(0), files.get(1), rules.build());
+		RedactionResult result;
+		try {
+			result = JfrRedactor.redact(files.get(0), files.get(1), redactor);
+		} catch (RuntimeException | StackOverflowError e) {
+			throw unprocessable(files.get(0), e);
+		}
 		double millis = (System.nanoTime() - start) / 1e6;
 		out.printf("Redacted %s into %s in %.1f ms%n", files.get(0), files.get(1), millis);
 		out.printf("Strings: %,d of %,d redacted, %,d stored occurrences replaced%n", result.redactedStringCount(),

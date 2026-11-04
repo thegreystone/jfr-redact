@@ -50,6 +50,13 @@ public interface StringRedactor {
 	String redact(String value, List<StringLocation> locations);
 
 	/**
+	 * Note that {@code other} is not asked about a string this redactor changes in any way, not
+	 * even a thread dump in which this redactor only hashed the thread names: the rest of the dump
+	 * stays as it is. To also scrub such strings, add the rules to the same {@link RuleRedactor},
+	 * as {@link RuleRedactor.Builder#replaceEachMatch(String, String)} or
+	 * {@link RuleRedactor.Builder#replaceMatching(String, String)}, which see the result of the
+	 * preceding rules.
+	 *
 	 * @return a redactor that asks {@code other} about the strings this redactor keeps
 	 */
 	default StringRedactor orElse(StringRedactor other) {

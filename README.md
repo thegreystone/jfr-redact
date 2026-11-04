@@ -104,7 +104,11 @@ has keyed variants, such as `hashClassNames(regex, key)`. The Javadoc of `RuleRe
 `JfrRedactor.redact(input, output, redactor)` analyzes the whole recording, then calls
 `StringRedactor.redact(value, locations)` once per distinct string. Returning `value` keeps the string, and any other
 result replaces every copy of it. `RuleRedactor` provides the command line rules (`replaceMatching` for `--match`),
-plus `replaceIf` and keyed hashes, and `orElse` chains redactors.
+plus `replaceIf`, `replaceEachMatch`, which replaces only the matches within a string, and keyed hashes.
+
+`orElse` chains redactors, but only asks the second about the strings the first keeps unchanged. When the first hashes
+the thread names in a thread dump, the second never sees the dump, and the rest of it stays as it was. To scrub
+everything, put the rules in one `RuleRedactor`, where each rule sees the result of the rules before it.
 
 A location is the type and field that JMC shows the string in (`getOwner()` and `getField()`), however the writer
 stored it, and `isPooled()` tells whether this copy is in a constant pool or inline in an event. Predicates such as
