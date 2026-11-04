@@ -259,8 +259,9 @@ Redaction makes two passes. The first collects every distinct string with its lo
 the events and constant pools that store a replaced string, updates the offsets that moved, and copies everything
 else verbatim.
 
-The parser reads one chunk at a time into a reusable buffer, so memory is bounded by the largest chunk and the number
-of distinct strings. It compiles the metadata into field programs per type, skips the events it does not need by
+The parser reads one chunk at a time into a reusable buffer, so memory is bounded by the largest chunk, the number of
+constants in it and the number of distinct strings: a 74 MB recording with two chunks and two million constants
+needs a heap of 256 MB. It compiles the metadata into field programs per type, skips the events it does not need by
 their size, and hashes strings from the chunk buffer, so that counting a known string allocates nothing.
 
 ## Building

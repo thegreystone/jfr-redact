@@ -124,16 +124,24 @@ public final class JfrRedactor {
 			}
 		}
 		phase.commit();
+		int stringCount = strings.size();
+		long chunkCount = collector.getChunkCount();
+		boolean[] changedCheckpoints = redactedCount == 0 ? null : collector.getChangedCheckpoints(changed);
+		// Released for the rewrite: the collector keeps a record per constant of the largest chunk,
+		// in the millions for a large one, and the strings and locations are no longer needed
+		collector = null;
+		strings = null;
+		locations = null;
 
 		try (TemporaryOutput temporary = new TemporaryOutput(destination)) {
 			RedactionResult result;
 			phase = PhaseEvent.start(PhaseEvent.REWRITE);
 			if (redactedCount == 0) {
 				Files.copy(input, temporary.path, StandardCopyOption.REPLACE_EXISTING);
-				result = new RedactionResult(strings.size(), 0, collector.getChunkCount(), 0, 0, 0, 0, List.of());
+				result = new RedactionResult(stringCount, 0, chunkCount, 0, 0, 0, 0, List.of());
 			} else {
 				ChunkRewriter rewriter = new ChunkRewriter(changedStrings, changedReplacements.toArray(new String[0]),
-						collector.getChangedCheckpoints(changed), changedEventTypes);
+						changedCheckpoints, changedEventTypes);
 				try (FileChannel in = FileChannel.open(input, StandardOpenOption.READ);
 						FileChannel out = FileChannel.open(temporary.path, StandardOpenOption.WRITE)) {
 					rewriter.rewrite(in, out);
@@ -141,7 +149,7 @@ public final class JfrRedactor {
 					throw new InvalidRecordingException(
 							"Could not decode the recording, which may be corrupt (" + e + ")", e);
 				}
-				result = new RedactionResult(strings.size(), redactedCount, rewriter.getChunkCount(),
+				result = new RedactionResult(stringCount, redactedCount, rewriter.getChunkCount(),
 						rewriter.getRewrittenChunkCount(), rewriter.getRewrittenEventCount(),
 						rewriter.getRewrittenCheckpointCount(), rewriter.getReplacedCount(),
 						Collections.unmodifiableList(redactedInMetadata));

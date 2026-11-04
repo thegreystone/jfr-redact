@@ -515,9 +515,16 @@ final class ChunkRewriter {
 		outSize += bytes.length;
 	}
 
+	/**
+	 * Grows the output to the size of the chunk being rewritten and an eighth, which a rewritten
+	 * chunk rarely exceeds, and then by half, so that a large chunk is not copied over and over,
+	 * with the copies of a doubling buffer in memory at once
+	 */
 	private void ensureOut(int length) {
-		if (outSize + length > out.length) {
-			out = Arrays.copyOf(out, Math.max(outSize + length, out.length * 2));
+		int needed = outSize + length;
+		if (needed > out.length) {
+			int chunk = reader.size() + (reader.size() >>> 3);
+			out = Arrays.copyOf(out, Math.max(needed, Math.max(chunk, out.length + (out.length >>> 1))));
 		}
 	}
 

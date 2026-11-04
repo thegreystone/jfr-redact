@@ -164,6 +164,10 @@ public final class Main {
 		} catch (IOException | IllegalArgumentException e) {
 			err.println("Error: " + e.getMessage());
 			return 1;
+		} catch (OutOfMemoryError e) {
+			err.println("Error: out of memory; give the JVM more heap, as in java -Xmx2g -jar jfr-redact.jar, "
+					+ "or jfr-redact -Xmx2g for the native image");
+			return 1;
 		}
 	}
 
