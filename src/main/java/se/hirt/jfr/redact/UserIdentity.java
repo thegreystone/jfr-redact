@@ -110,7 +110,7 @@ public record UserIdentity(Set<String> homeDirectories, Set<String> userNames, S
 		LocationCollector collector = new LocationCollector();
 		new StreamingChunkParser().parse(recording, collector);
 		StringCountMap strings = collector.getStrings();
-		List<List<StringLocation>> locations = collector.getLocationsByEntry();
+		List<List<StringLocation>> locations = collector.getLocationsByEntry(false);
 		Set<String> homes = new LinkedHashSet<>();
 		Set<String> users = new LinkedHashSet<>();
 		Set<String> hosts = new LinkedHashSet<>();

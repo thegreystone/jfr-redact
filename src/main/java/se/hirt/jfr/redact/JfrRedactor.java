@@ -43,6 +43,7 @@ import java.util.Objects;
 
 import se.hirt.jfr.redact.internal.PhaseEvent;
 import se.hirt.jfr.redact.internal.RedactionEvent;
+import se.hirt.jfr.redact.parser.ChunkReader;
 import se.hirt.jfr.redact.parser.StreamingChunkParser;
 import se.hirt.jfr.redact.scan.StringCountMap;
 
@@ -88,7 +89,9 @@ public final class JfrRedactor {
 		event.begin();
 		PhaseEvent phase = PhaseEvent.start(PhaseEvent.COLLECT);
 		LocationCollector collector = new LocationCollector();
-		new StreamingChunkParser().parse(input, collector);
+		// Both passes read the chunks with one reader, so that its buffer is allocated once
+		ChunkReader reader = new ChunkReader();
+		new StreamingChunkParser(reader).parse(input, collector);
 		phase.commit();
 		phase = PhaseEvent.start(PhaseEvent.LOCATE);
 		StringCountMap strings = collector.getStrings();
@@ -140,8 +143,8 @@ public final class JfrRedactor {
 				Files.copy(input, temporary.path, StandardCopyOption.REPLACE_EXISTING);
 				result = new RedactionResult(stringCount, 0, chunkCount, 0, 0, 0, 0, List.of());
 			} else {
-				ChunkRewriter rewriter = new ChunkRewriter(changedStrings, changedReplacements.toArray(new String[0]),
-						changedCheckpoints, changedEventTypes);
+				ChunkRewriter rewriter = new ChunkRewriter(reader, changedStrings,
+						changedReplacements.toArray(new String[0]), changedCheckpoints, changedEventTypes);
 				try (FileChannel in = FileChannel.open(input, StandardOpenOption.READ);
 						FileChannel out = FileChannel.open(temporary.path, StandardOpenOption.WRITE)) {
 					rewriter.rewrite(in, out);

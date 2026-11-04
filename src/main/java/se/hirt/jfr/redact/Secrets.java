@@ -61,9 +61,6 @@ final class Secrets {
 			+ "|\\bxox[abposr]-[A-Za-z0-9-]{10,255}" + "|\\bAIza[0-9A-Za-z_-]{35}"
 			+ "|\\b[rs]k_live_[0-9A-Za-z]{24,255}" + "|(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,255}"
 			+ "|\\beyJ[A-Za-z0-9_-]{8,4096}\\.eyJ[A-Za-z0-9_-]{8,4096}\\.[A-Za-z0-9_-]{0,4096}");
-	/** The literals one of which a string must contain for {@link #TOKENS} to match */
-	private static final String[] TOKEN_LITERALS = {"AKIA", "ASIA", "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
-			"github_pat_", "xox", "AIza", "k_live_", "sk-", "eyJ"};
 	/** The token of a bearer or of an {@code Authorization} value, the first group */
 	private static final Pattern BEARER = Pattern.compile("(?i)\\bbearer\\s+([A-Za-z0-9._~+/=-]{8,4096})");
 	private static final Pattern AUTHORIZATION = Pattern.compile(
@@ -72,6 +69,18 @@ final class Secrets {
 	private static final String PEM_END = "-----END ";
 	private static final String PRIVATE_KEY = "PRIVATE KEY-----";
 	private static final int MAX_NAME = 128;
+	private static final String BEARER_WORD = "bearer";
+	private static final String AUTHORIZATION_WORD = "authorization";
+	/** What {@link #scan} finds in a text, each a condition of one of the searches */
+	private static final int PRIVATE_KEY_FOUND = 1;
+	private static final int TOKEN_FOUND = 1 << 1;
+	private static final int BEARER_FOUND = 1 << 2;
+	private static final int AUTHORIZATION_FOUND = 1 << 3;
+	private static final int WHITESPACE_FOUND = 1 << 4;
+	private static final int SEPARATOR_FOUND = 1 << 5;
+	private static final int URL_FOUND = 1 << 6;
+	private static final int EQUALS_FOUND = 1 << 7;
+	private static final int DASH_FOUND = 1 << 8;
 
 	private Secrets() {
 	}
@@ -131,26 +140,98 @@ final class Secrets {
 	 * @return the text with the secrets replaced, the same instance if it holds none
 	 */
 	static String redactFormats(String text) {
-		String result = redactPrivateKeys(text);
-		if (containsAny(result, TOKEN_LITERALS)) {
+		int found = scan(text);
+		if (found == 0) {
+			return text;
+		}
+		// Replacing only removes what the scan found, so what it found in the text holds for the
+		// result of each step
+		String result = text;
+		if ((found & PRIVATE_KEY_FOUND) != 0) {
+			result = redactPrivateKeys(result);
+		}
+		if ((found & TOKEN_FOUND) != 0) {
 			result = TOKENS.matcher(result).replaceAll(REDACTED);
 		}
-		if (containsIgnoreCase(result, "bearer")) {
+		if ((found & (BEARER_FOUND | WHITESPACE_FOUND)) == (BEARER_FOUND | WHITESPACE_FOUND)) {
 			result = replaceGroup(BEARER, result);
 		}
-		if (containsIgnoreCase(result, "uthorization")) {
+		if ((found & (AUTHORIZATION_FOUND | SEPARATOR_FOUND)) == (AUTHORIZATION_FOUND | SEPARATOR_FOUND)) {
 			result = replaceGroup(AUTHORIZATION, result);
 		}
-		if (result.contains("://")) {
+		if ((found & URL_FOUND) != 0) {
 			result = redactUrlPasswords(result);
 		}
-		if (result.indexOf('=') >= 0) {
+		if ((found & EQUALS_FOUND) != 0) {
 			result = redactAssignments(result);
 		}
-		if (result.indexOf('-') >= 0) {
+		if ((found & DASH_FOUND) != 0) {
 			result = redactOptionValues(result);
 		}
 		return result.equals(text) ? text : result;
+	}
+
+	/**
+	 * Finds, in one pass, what the searches need to have a chance: the start of a private key, the
+	 * literals starting the formats of {@link #TOKENS}, the words of {@link #BEARER} and
+	 * {@link #AUTHORIZATION}, ignoring case as they do, which folds ASCII letters only, the
+	 * whitespace a bearer token follows, the colon or equals sign an authorization value follows,
+	 * {@code ://}, {@code =} and {@code -}. Most strings, such as class names, hold none of them.
+	 * Setting the bit of lower case makes an ASCII letter lower case and turns no other character
+	 * into one.
+	 */
+	private static int scan(String text) {
+		int found = 0;
+		int length = text.length();
+		for (int i = 0; i < length; i++) {
+			char c = text.charAt(i);
+			switch (c) {
+			case ' ', '\t', '\n', '\u000B', '\f', '\r' -> found |= WHITESPACE_FOUND;
+			case ':' -> found |= text.startsWith("//", i + 1) ? SEPARATOR_FOUND | URL_FOUND : SEPARATOR_FOUND;
+			case '=' -> found |= SEPARATOR_FOUND | EQUALS_FOUND;
+			case '-' -> found |= text.startsWith(PEM_BEGIN, i) ? DASH_FOUND | PRIVATE_KEY_FOUND : DASH_FOUND;
+			default -> {
+				if (startsToken(text, i, c)) {
+					found |= TOKEN_FOUND;
+				}
+				int lower = c | 0x20;
+				if (lower == 'b' && startsWithAsciiIgnoringCase(text, i, BEARER_WORD)) {
+					found |= BEARER_FOUND;
+				} else if (lower == 'a' && startsWithAsciiIgnoringCase(text, i, AUTHORIZATION_WORD)) {
+					found |= AUTHORIZATION_FOUND;
+				}
+			}
+			}
+		}
+		return found;
+	}
+
+	/**
+	 * True if one of the literals starting the formats of {@link #TOKENS} starts at the position
+	 */
+	private static boolean startsToken(String text, int at, char c) {
+		return switch (c) {
+		case 'A' -> text.startsWith("AKIA", at) || text.startsWith("ASIA", at) || text.startsWith("AIza", at);
+		case 'g' -> text.startsWith("gh", at) && at + 3 < text.length() && text.charAt(at + 3) == '_'
+				&& "pousr".indexOf(text.charAt(at + 2)) >= 0 || text.startsWith("github_pat_", at);
+		case 'x' -> text.startsWith("xox", at);
+		case 'k' -> text.startsWith("k_live_", at);
+		case 's' -> text.startsWith("sk-", at);
+		case 'e' -> text.startsWith("eyJ", at);
+		default -> false;
+		};
+	}
+
+	private static boolean startsWithAsciiIgnoringCase(String text, int at, String lowerCase) {
+		if (at + lowerCase.length() > text.length()) {
+			return false;
+		}
+		for (int i = 1; i < lowerCase.length(); i++) {
+			if ((text.charAt(at + i) | 0x20) != lowerCase.charAt(i)) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** Replaces each private key in PEM format, to its end line or to the end of the text */
@@ -349,35 +430,33 @@ final class Secrets {
 		return c == '_' || c == '.' || c == '-' || Character.isLetterOrDigit(c);
 	}
 
-	private static boolean containsAny(String text, String[] literals) {
-		for (String literal : literals) {
-			if (text.contains(literal)) {
-				return true;
-			}
-		}
-		return false;
-	}
-
-	static boolean containsIgnoreCase(String text, String literal) {
-		return indexOfIgnoreCase(text, literal, 0) >= 0;
-	}
-
-	/** The first occurrence of the literal at or after {@code from}, ignoring case */
+	/**
+	 * The first occurrence of the literal at or after {@code from}, ignoring case: the first two
+	 * characters are compared before the rest, and only characters outside ASCII are converted, as
+	 * some convert to ASCII letters, such as the Kelvin sign and the dotless i
+	 */
 	static int indexOfIgnoreCase(String text, String literal, int from) {
 		int last = text.length() - literal.length();
 		if (literal.isEmpty()) {
 			return from <= text.length() ? from : -1;
 		}
-		char first = literal.charAt(0);
-		char upper = Character.toUpperCase(first);
-		char lower = Character.toLowerCase(first);
+		char lower0 = Character.toLowerCase(literal.charAt(0));
+		char upper0 = Character.toUpperCase(literal.charAt(0));
+		boolean two = literal.length() > 1;
+		char lower1 = two ? Character.toLowerCase(literal.charAt(1)) : 0;
+		char upper1 = two ? Character.toUpperCase(literal.charAt(1)) : 0;
 		for (int i = Math.max(0, from); i <= last; i++) {
-			char c = text.charAt(i);
-			if ((c == upper || c == lower || Character.toLowerCase(c) == lower)
+			if (sameIgnoringCase(text.charAt(i), lower0, upper0)
+					&& (!two || sameIgnoringCase(text.charAt(i + 1), lower1, upper1))
 					&& text.regionMatches(true, i, literal, 0, literal.length())) {
 				return i;
 			}
 		}
 		return -1;
+	}
+
+	private static boolean sameIgnoringCase(char c, char lower, char upper) {
+		return c == lower || c == upper
+				|| c > 127 && (Character.toLowerCase(c) == lower || Character.toUpperCase(c) == upper);
 	}
 }

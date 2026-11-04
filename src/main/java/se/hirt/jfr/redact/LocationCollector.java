@@ -518,15 +518,27 @@ final class LocationCollector implements ChunkParserListener {
 	 * @return per string entry, the distinct locations of the string
 	 */
 	List<List<StringLocation>> getLocationsByEntry() {
+		return getLocationsByEntry(true);
+	}
+
+	/**
+	 * @param metadata
+	 *            whether to add {@link StringLocation#METADATA} to the strings also occurring in
+	 *            the metadata, which takes an index of the metadata to find
+	 * @return per string entry, the distinct locations of the string
+	 */
+	List<List<StringLocation>> getLocationsByEntry(boolean metadata) {
 		List<List<StringLocation>> result = new ArrayList<>(strings.size());
 		for (int i = 0; i < strings.size(); i++) {
 			result.add(new ArrayList<>(2));
 		}
 		pairs.forEach(pair -> result.get((int) (pair >>> 32)).add(locations.get((int) pair)));
-		SubstringIndex metadata = new SubstringIndex(metadataStrings);
-		for (int i = 0; i < strings.size(); i++) {
-			if (metadata.occursIn(strings.getString(i))) {
-				result.get(i).add(StringLocation.METADATA);
+		if (metadata) {
+			SubstringIndex index = new SubstringIndex(metadataStrings);
+			for (int i = 0; i < strings.size(); i++) {
+				if (index.occursIn(strings.getString(i))) {
+					result.get(i).add(StringLocation.METADATA);
+				}
 			}
 		}
 		return result;

@@ -1124,10 +1124,81 @@ public final class RuleRedactor implements StringRedactor {
 	private static final class SegmentHasher {
 		private final Pattern pattern;
 		private final UnaryOperator<String> hash;
+		/**
+		 * The literal before {@code (.*)} of an expression that is a literal followed by
+		 * {@code (.*)}, such as {@code com\.acme\.(.*)}, empty for {@code (.*)}, or else
+		 * {@code null}, see {@link #literal}
+		 */
+		private final String prefix;
+		/**
+		 * The literal after {@code (.*)} of an expression that is {@code (.*)} followed by a
+		 * literal and {@code $}, such as {@code (.*)Impl$}, or else {@code null}
+		 */
+		private final String suffix;
 
 		SegmentHasher(Pattern pattern, UnaryOperator<String> hash) {
 			this.pattern = pattern;
 			this.hash = memoize(hash);
+			String regex = pattern.flags() == 0 ? pattern.pattern() : "";
+			this.prefix = regex.endsWith("(.*)") ? literal(regex.substring(0, regex.length() - 4)) : null;
+			this.suffix = regex.startsWith("(.*)") && regex.endsWith("$") && regex.length() > 5
+					? literal(regex.substring(4, regex.length() - 1)) : null;
+		}
+
+		/**
+		 * The text a regular expression matches if it is a literal: letters, digits, underscores
+		 * and escaped dots, as in {@code com\.acme\.}, so that {@link #span} can find the span of
+		 * the common forms of expressions without the regex engine
+		 *
+		 * @return the text, or {@code null} if the expression is not such a literal
+		 */
+		private static String literal(String regex) {
+			StringBuilder literal = new StringBuilder();
+			for (int i = 0; i < regex.length(); i++) {
+				char c = regex.charAt(i);
+				if (c == '\\' && i + 1 < regex.length() && regex.charAt(i + 1) == '.') {
+					literal.append('.');
+					i++;
+				} else if (Character.isLetterOrDigit(c) || c == '_') {
+					literal.append(c);
+				} else {
+					return null;
+				}
+			}
+			return literal.toString();
+		}
+
+		/**
+		 * The span of the part of the text the expression covers, see
+		 * {@link RuleRedactor#matchSpan}, found without the regex engine for the common forms, as
+		 * the engine finds it, since a name holds no line terminator for {@code .} to stop at: for
+		 * a literal followed by {@code (.*)}, the rest of the text after the first occurrence of
+		 * the literal, and for {@code (.*)} followed by a literal and {@code $}, the text before
+		 * the literal it ends with
+		 */
+		private int[] span(String text) {
+			if (prefix == null && suffix == null || hasLineTerminator(text)) {
+				return matchSpan(pattern, text);
+			}
+			if (prefix != null) {
+				int at = text.indexOf(prefix);
+				if (at < 0 || at + prefix.length() == text.length()) {
+					return null;
+				}
+				return new int[] {at + prefix.length(), text.length()};
+			}
+			int end = text.length() - suffix.length();
+			return end > 0 && text.endsWith(suffix) ? new int[] {0, end} : null;
+		}
+
+		private static boolean hasLineTerminator(String text) {
+			for (int i = 0; i < text.length(); i++) {
+				char c = text.charAt(i);
+				if (c == '\n' || c == '\r' || c == '\u0085' || c == '\u2028' || c == '\u2029') {
+					return true;
+				}
+			}
+			return false;
 		}
 
 		/**
@@ -1142,7 +1213,7 @@ public final class RuleRedactor implements StringRedactor {
 			if (name.isEmpty()) {
 				return null;
 			}
-			int[] span = matchSpan(pattern, name + '.');
+			int[] span = span(name + '.');
 			return span == null ? null : hashCovered(name, span[0], Math.min(span[1], name.length()));
 		}
 
@@ -1153,7 +1224,7 @@ public final class RuleRedactor implements StringRedactor {
 		 * @return the mapped simple name, or {@code null} if the match does not reach the segment
 		 */
 		private String mapSimpleName(String name, int start) {
-			int[] span = matchSpan(pattern, name);
+			int[] span = span(name);
 			if (span == null || span[1] <= start) {
 				return null;
 			}
@@ -1250,6 +1321,8 @@ public final class RuleRedactor implements StringRedactor {
 		 * The renamed classes, objects and modules of thread dump frames, which recur in every dump
 		 */
 		private final Function<String, Renamed> frameClasses = new Memo<>(name -> renameClass(name, false));
+		/** The renamed packages, shared by the classes, descriptors and modules naming them */
+		private final Function<String, Renamed> packages = new Memo<>(this::findPackage);
 		private final Function<String, String> objectClasses = new Memo<>(this::renameClassName);
 		private final Function<String, String> frameModules = new Memo<>(this::renameFrameModule);
 
@@ -1296,6 +1369,13 @@ public final class RuleRedactor implements StringRedactor {
 		 *         expression covers a piece of a segment
 		 */
 		private Renamed mapPackage(String name) {
+			return packages.apply(name);
+		}
+
+		/**
+		 * Maps a package by the first expression covering a piece of it, see {@link #mapPackage}
+		 */
+		private Renamed findPackage(String name) {
 			for (SegmentHasher hasher : hashers) {
 				String mapped = hasher.mapPackage(name);
 				if (mapped != null) {
@@ -1559,8 +1639,33 @@ public final class RuleRedactor implements StringRedactor {
 		 *         optional
 		 */
 		private static int suffixStart(Pattern suffix, String name) {
+			if (cannotEndWithSuffix(suffix, name)) {
+				return name.length();
+			}
 			Matcher m = suffix.matcher(name);
 			return m.find() ? m.start() : name.length();
+		}
+
+		/**
+		 * True if the name cannot end with the suffix, as most names cannot, which spares them the
+		 * regex engine: a suffix of {@link #HIDDEN_CLASS_SUFFIX} takes a {@code +}, or a digit
+		 * after the last slash, and one of {@link #INTERNAL_HIDDEN_CLASS_SUFFIX} takes {@code 0x}
+		 */
+		private static boolean cannotEndWithSuffix(Pattern suffix, String name) {
+			if (suffix == INTERNAL_HIDDEN_CLASS_SUFFIX) {
+				return !name.contains("0x");
+			}
+			// $ also matches before a line terminator ending the name, at which the empty suffix starts
+			if (suffix != HIDDEN_CLASS_SUFFIX || name.indexOf('+') >= 0
+					|| !name.isEmpty() && SegmentHasher.hasLineTerminator(name.substring(name.length() - 1))) {
+				return false;
+			}
+			int slash = name.lastIndexOf('/');
+			return slash < 0 || slash + 1 == name.length() || !isAsciiDigit(name.charAt(slash + 1));
+		}
+
+		private static boolean isAsciiDigit(char c) {
+			return c >= '0' && c <= '9';
 		}
 
 		/** Renames the classes of a method descriptor, such as {@code (ILcom/acme/Foo;)V} */

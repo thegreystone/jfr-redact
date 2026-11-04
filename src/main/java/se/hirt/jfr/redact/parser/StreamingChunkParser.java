@@ -47,7 +47,19 @@ public final class StreamingChunkParser {
 	private static final long METADATA_TYPE = 0;
 	private static final long CHECKPOINT_TYPE = 1;
 
-	private final ChunkReader reader = new ChunkReader();
+	private final ChunkReader reader;
+
+	public StreamingChunkParser() {
+		this(new ChunkReader());
+	}
+
+	/**
+	 * Parses with the reader, whose buffer, sized for the largest chunk read, is reused, as by a
+	 * second pass over the same recording
+	 */
+	public StreamingChunkParser(ChunkReader reader) {
+		this.reader = reader;
+	}
 
 	/**
 	 * Parses the recording in the file.

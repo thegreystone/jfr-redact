@@ -62,7 +62,7 @@ final class ChunkRewriter {
 	private static final int HEADER_METADATA_OFFSET = 24;
 	private static final int LEGACY_HEADER_METADATA_OFFSET = 8;
 
-	private final ChunkReader reader = new ChunkReader();
+	private final ChunkReader reader;
 	private final StringDecoder decoder = new StringDecoder();
 	/** Only the strings to replace */
 	private final StringCountMap strings;
@@ -116,8 +116,13 @@ final class ChunkRewriter {
 	 * @param changedEventTypes
 	 *            the event types storing a string to replace inline, the only events decoded
 	 */
-	ChunkRewriter(StringCountMap strings, String[] replacements, boolean[] changedCheckpoints,
+	/**
+	 * @param reader
+	 *            the reader of the first pass, whose buffer is sized for the largest chunk
+	 */
+	ChunkRewriter(ChunkReader reader, StringCountMap strings, String[] replacements, boolean[] changedCheckpoints,
 			Set<String> changedEventTypes) {
+		this.reader = reader;
 		this.strings = strings;
 		this.replacements = replacements;
 		this.changedCheckpoints = changedCheckpoints;

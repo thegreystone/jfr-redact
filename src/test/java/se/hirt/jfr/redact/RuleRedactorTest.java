@@ -354,6 +354,34 @@ class RuleRedactorTest {
 	}
 
 	/**
+	 * The common forms of class name expressions, a literal and {@code (.*)}, and {@code (.*)}, a
+	 * literal and {@code $}, are matched without the regex engine, as the engine matches them: the
+	 * same expressions with the dots in classes, which are no literals, take the engine
+	 */
+	@Test
+	void matchesTheCommonFormsOfClassNameExpressionsAsTheRegexEngineDoes() {
+		List<String> names = List.of("com.acme.Foo", "com.acme.", "com.acme", "org.com.acme.Bar", "com.acme.com.acme.X",
+				"com.acmeX.Foo", "FooImpl", "Impl", "com.acme.Impl", "com.acme.BarImpl", "com.acme.Impl.Foo",
+				"com.acme.Foo\nImpl", "com.acme.\nFoo", "java.util.HashMap", "[Lcom.acme.Foo;",
+				"(Lcom/acme/FooImpl;)V");
+		List<StringLocation> classes = List.of(CLASS_NAME);
+		List<StringLocation> packages = List.of(new StringLocation("jdk.types.Package", "name", true, List.of()));
+		List<StringLocation> descriptors = List
+				.of(new StringLocation("jdk.types.Method", "descriptor", true, List.of()));
+		for (String[] forms : new String[][] {{"com\\.acme\\.(.*)", "com[.]acme[.](.*)"}, {"(.*)", "(.*)()"},
+				{"(.*)Impl$", "(.*)Imp[l]$"}, {"acme\\.(.*)", "acme[.](.*)"}}) {
+			RuleRedactor fast = RuleRedactor.builder().hashClassNames(forms[0]).build();
+			RuleRedactor engine = RuleRedactor.builder().hashClassNames(forms[1]).build();
+			for (String name : names) {
+				for (List<StringLocation> locations : List.of(classes, packages, descriptors)) {
+					assertEquals(engine.redact(name, locations), fast.redact(name, locations),
+							forms[0] + " on " + name + " at " + locations);
+				}
+			}
+		}
+	}
+
+	/**
 	 * A substitution passes its result on, so that the substitutions all apply and a rule deciding
 	 * the whole string sees what they made of it, while a fixed replacement decides
 	 */
