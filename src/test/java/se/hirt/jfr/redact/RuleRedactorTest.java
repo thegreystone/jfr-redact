@@ -343,6 +343,26 @@ class RuleRedactorTest {
 	}
 
 	@Test
+	void rewritesQuotedThreadNamesContainingOthers() {
+		String dump = """
+				"say "hi"" #1 prio=5 os_prio=31 tid=0x0000000000000001 nid=1 waiting
+				"hi" #2 prio=5 os_prio=31 tid=0x0000000000000002 nid=2 waiting
+
+				Found one Java-level deadlock:
+				"hi":
+				  which is held by "say "hi""
+				""";
+		RuleRedactor redactor = RuleRedactor.builder().hashThreadNames().build();
+		StringLocation threadName = new StringLocation("java.lang.Thread", "javaName", true, List.of());
+		String say = redactor.redact("say \"hi\"", List.of(threadName));
+		String hi = redactor.redact("hi", List.of(threadName));
+
+		String expected = dump.replace("\"say \"hi\"\"", "\"" + say + "\"").replace("\"hi\" #2", "\"" + hi + "\" #2")
+				.replace("\"hi\":", "\"" + hi + "\":");
+		assertEquals(expected, redactor.redact(dump, List.of(THREAD_DUMP)));
+	}
+
+	@Test
 	void rewritesThreadDumps() {
 		String dump = """
 				2026-06-04 22:20:00

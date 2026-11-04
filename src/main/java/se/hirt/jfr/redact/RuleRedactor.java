@@ -36,8 +36,11 @@ import java.util.Base64;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
@@ -430,6 +433,41 @@ public final class RuleRedactor implements StringRedactor {
 		}
 	}
 
+	/**
+	 * Remembers the results of a function of strings, which may be {@code null}, since the same
+	 * thread names, class names and segments recur in every frame and in every thread dump. Emptied
+	 * when full, to bound its memory in a long-lived redactor.
+	 */
+	private static final class Memo<T> implements Function<String, T> {
+		private static final int MAX_SIZE = 1 << 16;
+		private static final Object NONE = new Object();
+
+		private final Function<String, T> function;
+		private final Map<String, Object> results = new ConcurrentHashMap<>();
+
+		Memo(Function<String, T> function) {
+			this.function = function;
+		}
+
+		@SuppressWarnings("unchecked")
+		@Override
+		public T apply(String key) {
+			Object result = results.get(key);
+			if (result == null) {
+				result = Objects.requireNonNullElse(function.apply(key), NONE);
+				if (results.size() >= MAX_SIZE) {
+					results.clear();
+				}
+				results.put(key, result);
+			}
+			return result == NONE ? null : (T) result;
+		}
+	}
+
+	private static UnaryOperator<String> memoize(UnaryOperator<String> function) {
+		return new Memo<>(function)::apply;
+	}
+
 	private static String hex(byte[] hash) {
 		return HexFormat.of().formatHex(hash, 0, 4);
 	}
@@ -548,7 +586,7 @@ public final class RuleRedactor implements StringRedactor {
 		private final UnaryOperator<String> hash;
 
 		ThreadNameRule(UnaryOperator<String> hash) {
-			this.hash = hash;
+			this.hash = memoize(hash);
 		}
 
 		private String replaceThreadName(String name) {
@@ -599,13 +637,16 @@ public final class RuleRedactor implements StringRedactor {
 			return text;
 		}
 
+		/**
+		 * Replaces the names of the thread headers wherever they occur quoted, in a single pass. At
+		 * each quote, the longest name followed by a quote on the same line is replaced, so that a
+		 * name contained in another is not replaced inside it, and the scan continues after it, so
+		 * that a replacement is never matched again.
+		 */
 		private String rewriteThreadDump(String dump) {
 			Set<String> names = new HashSet<>();
 			for (int lineStart = 0; lineStart < dump.length();) {
-				int lineEnd = dump.indexOf('\n', lineStart);
-				if (lineEnd < 0) {
-					lineEnd = dump.length();
-				}
+				int lineEnd = lineEnd(dump, lineStart);
 				if (dump.charAt(lineStart) == '"') {
 					int nameEnd = headerNameEnd(dump, lineStart, lineEnd);
 					if (nameEnd > lineStart + 1) {
@@ -614,21 +655,38 @@ public final class RuleRedactor implements StringRedactor {
 				}
 				lineStart = lineEnd + 1;
 			}
-			// Longest first, so that a name contained in another is not replaced inside it
-			List<String> sorted = new ArrayList<>(names);
-			sorted.sort((a, b) -> b.length() - a.length());
-			String result = dump;
-			for (String name : sorted) {
-				result = result.replace('"' + name + '"', '"' + replaceThreadName(name) + '"');
+			if (names.isEmpty()) {
+				return dump;
 			}
-			return result;
+			StringBuilder result = new StringBuilder(dump.length() + 64);
+			int copied = 0;
+			for (int quote = dump.indexOf('"'); quote >= 0;) {
+				int lineEnd = lineEnd(dump, quote);
+				int close = dump.lastIndexOf('"', lineEnd - 1);
+				while (close > quote && !names.contains(dump.substring(quote + 1, close))) {
+					close = dump.lastIndexOf('"', close - 1);
+				}
+				if (close > quote) {
+					result.append(dump, copied, quote + 1).append(replaceThreadName(dump.substring(quote + 1, close)));
+					copied = close;
+					quote = dump.indexOf('"', close + 1);
+				} else {
+					quote = dump.indexOf('"', quote + 1);
+				}
+			}
+			return result.append(dump, copied, dump.length()).toString();
+		}
+
+		private static int lineEnd(String dump, int from) {
+			int end = dump.indexOf('\n', from);
+			return end < 0 ? dump.length() : end;
 		}
 
 		private static int headerNameEnd(String dump, int lineStart, int lineEnd) {
 			int end = -1;
 			for (String marker : HEADER_NAME_ENDS) {
-				int at = dump.indexOf(marker, lineStart + 1);
-				if (at > 0 && at < lineEnd && (end < 0 || at < end)) {
+				int at = dump.indexOf(marker, lineStart + 1, lineEnd);
+				if (at > 0 && (end < 0 || at < end)) {
 					end = at;
 				}
 			}
@@ -664,8 +722,58 @@ public final class RuleRedactor implements StringRedactor {
 	 * which a {@code SourceFile} attribute with a slash, as compilers other than javac may write,
 	 * would also satisfy: its first path segment is then renamed like a module.
 	 */
-	private static final Pattern DUMP_FRAME = Pattern
-			.compile("\\bat (" + DUMP_CLASS_NAME + ")\\.([\\p{javaJavaIdentifierPart}<>]+)\\(([^()/]*/)?([^()]*)\\)");
+	private static final LiteralPattern DUMP_FRAME = new LiteralPattern("at ",
+			"\\bat (" + DUMP_CLASS_NAME + ")\\.([\\p{javaJavaIdentifierPart}<>]+)\\(([^()/]*/)?([^()]*)\\)", 0);
+
+	/**
+	 * A pattern starting with a literal, whose matches in a large text are found by locating the
+	 * literal with {@link String#indexOf}, which is much faster than the search of the regex
+	 * engine, and matching the pattern there. Bounds are transparent, so the pattern may look
+	 * behind the literal, as the {@code \b} of {@link #DUMP_FRAME} does, and the matches are those
+	 * of {@link Matcher#find()}.
+	 */
+	private static final class LiteralPattern {
+		private final String literal;
+		private final Pattern pattern;
+
+		LiteralPattern(String literal, String regex, int flags) {
+			this.literal = literal;
+			this.pattern = Pattern.compile(regex, flags);
+		}
+
+		Finder finder(String text) {
+			return new Finder(text);
+		}
+
+		final class Finder {
+			private final String text;
+			private final Matcher matcher;
+			private int from;
+
+			private Finder(String text) {
+				this.text = text;
+				this.matcher = pattern.matcher(text).useTransparentBounds(true);
+			}
+
+			/** @return the matcher, holding the match of the last successful {@link #find()} */
+			Matcher matcher() {
+				return matcher;
+			}
+
+			boolean find() {
+				for (int at = text.indexOf(literal, from); at >= 0; at = text.indexOf(literal, at + 1)) {
+					matcher.region(at, text.length());
+					if (matcher.lookingAt()) {
+						from = matcher.end();
+						return true;
+					}
+				}
+				from = text.length();
+				return false;
+			}
+		}
+	}
+
 	/**
 	 * The file name of a frame location, {@code Foo.java:12} or {@code Foo.java}. The other
 	 * locations HotSpot prints, {@code Native Method}, {@code Unknown Source}, {@code Redefined}
@@ -720,19 +828,17 @@ public final class RuleRedactor implements StringRedactor {
 
 	/** Replaces the part of method names matching an expression with a hash */
 	private static final class MethodNameRule implements Rule {
-		private final Pattern pattern;
-		private final UnaryOperator<String> hash;
+		private final Function<String, String> rename;
 
 		MethodNameRule(Pattern pattern, UnaryOperator<String> hash) {
-			this.pattern = pattern;
-			this.hash = hash;
+			rename = new Memo<>(name -> replaceMatch(pattern, hash, name));
 		}
 
 		@Override
 		public String apply(String value, List<StringLocation> locations) {
 			for (StringLocation location : locations) {
 				if (location.isMethodName()) {
-					return replaceMatch(pattern, hash, value);
+					return rename.apply(value);
 				}
 			}
 			return null;
@@ -743,11 +849,12 @@ public final class RuleRedactor implements StringRedactor {
 			if (!location.isThreadDump()) {
 				return text;
 			}
-			Matcher m = DUMP_FRAME.matcher(text);
+			LiteralPattern.Finder frames = DUMP_FRAME.finder(text);
+			Matcher m = frames.matcher();
 			StringBuilder result = null;
 			int copied = 0;
-			while (m.find()) {
-				String renamed = inQuotedName(text, m.start()) ? null : replaceMatch(pattern, hash, m.group(2));
+			while (frames.find()) {
+				String renamed = inQuotedName(text, m.start()) ? null : rename.apply(m.group(2));
 				if (renamed != null) {
 					if (result == null) {
 						result = new StringBuilder(text.length() + 64);
@@ -780,7 +887,7 @@ public final class RuleRedactor implements StringRedactor {
 
 		SegmentHasher(Pattern pattern, UnaryOperator<String> hash) {
 			this.pattern = pattern;
-			this.hash = hash;
+			this.hash = memoize(hash);
 		}
 
 		/**
@@ -861,17 +968,18 @@ public final class RuleRedactor implements StringRedactor {
 		 * rare templates below have patterns of their own, so that each pattern starts with a
 		 * literal, which keeps the scan of a large dump cheap.
 		 */
-		private static final Pattern LOCK_OBJECT = Pattern
-				.compile("\\(a (?:java\\.lang\\.Class for )?" + OBJECT_CLASS_NAME, Pattern.MULTILINE);
+		private static final LiteralPattern LOCK_OBJECT = new LiteralPattern("(a ",
+				"\\(a (?:java\\.lang\\.Class for )?" + OBJECT_CLASS_NAME, Pattern.MULTILINE);
 		/** The object of a deadlock, {@code (object 0x000000076b4d8f88, a com.acme.Foo),} */
-		private static final Pattern DEADLOCK_OBJECT = Pattern
-				.compile("\\(object 0x[0-9a-fA-F]+, a " + OBJECT_CLASS_NAME, Pattern.MULTILINE);
+		private static final LiteralPattern DEADLOCK_OBJECT = new LiteralPattern("(object 0x",
+				"\\(object 0x[0-9a-fA-F]+, a " + OBJECT_CLASS_NAME, Pattern.MULTILINE);
 		/**
 		 * The class being initialized, ending the line
 		 * {@code waiting on the Class initialization monitor for com.acme.Foo}
 		 */
-		private static final Pattern CLASS_INITIALIZATION_MONITOR = Pattern
-				.compile("Class initialization monitor for " + OBJECT_CLASS_NAME, Pattern.MULTILINE);
+		private static final LiteralPattern CLASS_INITIALIZATION_MONITOR = new LiteralPattern(
+				"Class initialization monitor for ", "Class initialization monitor for " + OBJECT_CLASS_NAME,
+				Pattern.MULTILINE);
 		/**
 		 * The suffix the JVM appends to the name of a hidden class in source form, which differs
 		 * between runs. Class name constants carry the identity hash in JDK 8 to 14,
@@ -898,6 +1006,12 @@ public final class RuleRedactor implements StringRedactor {
 		 * name, the first one covering a piece of it decides, with its hash
 		 */
 		private final List<SegmentHasher> hashers;
+		/**
+		 * The renamed classes, objects and modules of thread dump frames, which recur in every dump
+		 */
+		private final Function<String, Renamed> frameClasses = new Memo<>(name -> renameClass(name, false));
+		private final Function<String, String> objectClasses = new Memo<>(this::renameClassName);
+		private final Function<String, String> frameModules = new Memo<>(this::renameFrameModule);
 
 		ClassNameRule(List<SegmentHasher> hashers) {
 			this.hashers = hashers;
@@ -1014,15 +1128,16 @@ public final class RuleRedactor implements StringRedactor {
 		 * {@link Renamed}.
 		 */
 		private String rewriteFrames(String text) {
-			Matcher m = DUMP_FRAME.matcher(text);
+			LiteralPattern.Finder frames = DUMP_FRAME.finder(text);
+			Matcher m = frames.matcher();
 			StringBuilder result = null;
 			int copied = 0;
-			while (m.find()) {
+			while (frames.find()) {
 				if (inQuotedName(text, m.start())) {
 					continue;
 				}
-				Renamed renamed = renameClass(m.group(1), false);
-				String module = m.start(3) < 0 ? null : renameFrameModule(m.group(3));
+				Renamed renamed = frameClasses.apply(m.group(1));
+				String module = m.start(3) < 0 ? null : frameModules.apply(m.group(3));
 				if (renamed == null && module == null) {
 					continue;
 				}
@@ -1105,12 +1220,13 @@ public final class RuleRedactor implements StringRedactor {
 					rewriteObjects(DEADLOCK_OBJECT, rewriteObjects(LOCK_OBJECT, text)));
 		}
 
-		private String rewriteObjects(Pattern objects, String text) {
-			Matcher m = objects.matcher(text);
+		private String rewriteObjects(LiteralPattern objects, String text) {
+			LiteralPattern.Finder finder = objects.finder(text);
+			Matcher m = finder.matcher();
 			StringBuilder result = null;
 			int copied = 0;
-			while (m.find()) {
-				String renamed = inQuotedName(text, m.start()) ? null : renameClassName(m.group(1));
+			while (finder.find()) {
+				String renamed = inQuotedName(text, m.start()) ? null : objectClasses.apply(m.group(1));
 				if (renamed != null) {
 					if (result == null) {
 						result = new StringBuilder(text.length() + 64);
