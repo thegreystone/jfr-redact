@@ -12,23 +12,46 @@ Build with `mvn package` (JDK 25+). Below, `jfr-redact` stands for `java -jar ta
 native image (see [Building](#building)).
 
 ```
-jfr-redact scan --table --top 30 recording.jfr
-jfr-redact redact --hash-thread-names --hash-class-names 'com\.acme\.(.*)' --match 'password' recording.jfr out.jfr
+jfr-redact redact recording.jfr redacted.jfr
+jfr-redact scan --table --top 30 redacted.jfr
 ```
 
-The first command lists the most frequent strings. The second hashes thread names and the class and package names
-below `com.acme`, and replaces strings containing `password` with `<REDACTED>`. The same from Java, plus a rule for a
-field of the application's own event:
+The first command removes what a recording reveals about the machine and the person who made it, and is the same as
+
+```
+jfr-redact redact --redact-secrets --anonymize-user --strip-process-arguments recording.jfr redacted.jfr
+```
+
+It replaces secrets, such as the values of environment variables named like `DB_PASSWORD` or `DD_API_KEY` and tokens
+with known formats anywhere, replaces the home directories, user names and host names that the recording's own
+environment variables name, wherever they occur, and e-mail addresses, and keeps only the executables of the command
+lines of the other processes on the machine, which the default JFR settings record. The second command lists the most
+frequent strings left, to check the result: no rule finds free text such as a password passed as a plain argument or a
+customer name in a log message.
+
+Given any option, `redact` applies only the options given, so a single rule can be tried on its own. To also hide the
+code, hash thread names and the class and package names below `com.acme`, and replace strings containing `password`:
+
+```
+jfr-redact redact --redact-secrets --anonymize-user --strip-process-arguments --hash-thread-names \
+    --hash-class-names 'com\.acme\.(.*)' --match 'password' recording.jfr redacted.jfr
+```
+
+The same from Java, plus a rule for a field of the application's own event:
 
 ```java
+Path input = Path.of("recording.jfr");
 StringRedactor redactor = RuleRedactor.builder()
+		.redactSecrets()
+		.anonymizeUser(UserIdentity.find(input))
+		.stripProcessArguments()
 		.hashThreadNames()
 		.hashClassNames("com\\.acme\\.(.*)")
 		.replaceIf(location -> location.getOwner().equals("com.acme.Login") && location.getField().equals("user"),
 				user -> "<USER>")
 		.replaceMatching("password", "<REDACTED>")
 		.build();
-RedactionResult result = JfrRedactor.redact(Path.of("recording.jfr"), Path.of("out.jfr"), redactor);
+RedactionResult result = JfrRedactor.redact(input, Path.of("redacted.jfr"), redactor);
 ```
 
 More examples are in [`src/test/java/se/hirt/jfr/redact/examples`](src/test/java/se/hirt/jfr/redact/examples).
@@ -64,13 +87,20 @@ for the included WebLogic recording.
 ## Redacting from the command line
 
 ```
-jfr-redact redact [--hash-thread-names] [--hash-class-names <regex>]... [--hash-method-names <regex>]...
+jfr-redact redact [--redact-secrets] [--anonymize-user] [--strip-process-arguments]
+                  [--hash-thread-names] [--hash-class-names <regex>]... [--hash-method-names <regex>]...
                   [--rename-package <package> <new name>]... [--replace <pattern> <replacement>]...
                   [--match <regex>]... [--replacement <text>] <recording.jfr> <redacted.jfr>
 ```
 
+Without options, `redact` applies the first three. Given any option, it applies only the options given, so a single
+rule can be tried on its own; add the first three to keep them.
+
 | Option | Replaces |
 |---|---|
+| `--redact-secrets` | With `<REDACTED>`: the values of environment variables and system and security properties whose name says they are secret, by its last part, such as `DB_PASSWORD`, `PGPASSWORD`, `*_API_KEY`, `*_TOKEN`, `SENTRY_DSN` or `keyStorePassword`; and in any string, AWS, GitHub, Slack, Google, Stripe and `sk-` keys, JSON web tokens, private keys, bearer tokens and `Authorization` values, passwords in URLs, and the values of `-Dname=`, `--name=`, `--name value`, `NAME=` and `?name=` with secret names |
+| `--anonymize-user` | The home directories (`HOME`, `USERPROFILE`, `user.home`), user names (from keys whose last part ends with `USER`, such as `USER`, `USERNAME`, `P4USER` or `user.name`, and `LOGNAME`) and host names (ending with `CLIENT`, `SERVER`, `DOMAIN`, `HOST` or `COMPUTER`, such as `P4CLIENT`, `LOGONSERVER`, `USERDOMAIN`, `HOSTNAME` or `COMPUTERNAME`) found in the recording's environment variables and system properties, wherever they occur, keeping paths (`/Users/alice/app.log` becomes `/Users/user/app.log`), and e-mail addresses, with `<EMAIL>` |
+| `--strip-process-arguments` | The arguments of the command lines in `jdk.SystemProcess` and `jdk.ProcessStart`, with `<REDACTED>`, keeping the executable |
 | `--hash-thread-names` | Thread names with `Thread-<hash>`, thread group names with `ThreadGroup-<hash>` |
 | `--hash-class-names <regex>` | The matched part (first group, if any) of class, package and module names |
 | `--hash-method-names <regex>` | The matched part of method names |
@@ -78,9 +108,31 @@ jfr-redact redact [--hash-thread-names] [--hash-class-names <regex>]... [--hash-
 | `--replace <pattern> <replacement>` | Strings matching a pattern that may start and end with `*`, which stands for the same text in the replacement, as in `'/home/alice/*' '/home/user/*'` |
 | `--match <regex>` | Strings containing a match, with `--replacement` (default `<REDACTED>`) |
 
-Rules are tried in the order given, `--match` last, and the first one that replaces a string decides; repeated
-`--hash-class-names` form one rule. Thread dumps and old-object descriptions go through the rules in order: each name
-rule rewrites the names it covers, and the first `--replace` or `--match` matching the text so far replaces all of it.
+Rules are tried in the order given, `--match` last, and the first three options after all of them. A `--replace` whose
+replacement has a `*` keeps the rest of the string and passes the result on to the following rules; any other rule
+that replaces a string decides. Repeated `--hash-class-names` form one rule. Thread dumps and old-object descriptions
+go through the rules in order: each name rule rewrites the names it covers, and the first `--replace` without `*` or
+`--match` matching the text so far replaces all of it.
+
+The first three options have limits worth knowing:
+
+- `--redact-secrets` judges a variable or property by its name and a string by known formats. A secret in other free
+  text, or in a variable with an unremarkable name, stays. A value replaced as a secret is replaced wherever it is
+  stored, so a secret value that is also, say, a setting elsewhere is replaced there too; empty values, `true` and
+  `false` are never treated as secrets.
+- `--anonymize-user` replaces only what the recording names. HotSpot, from JDK 7 to 25, records the environment
+  variables, but of the system properties only those the JVM sets and those given with `-D`, so not `user.home` and
+  `user.name`. Windows has no `HOME` and `USER` (`USERPROFILE` and `USERNAME` are read instead), macOS does not export
+  `HOSTNAME`, and some recordings, such as those of WebLogic's diagnostic framework, hold no environment variables at
+  all. It reports how many it found, and warns when it found none. Names shorter than three characters, and generic account names such as `root`, `java`, `oracle` or
+  `localhost`, are not replaced, as they name no person and would rename everything sharing them. Names of classes,
+  methods, packages and modules are never changed, and in thread dumps only the thread names are: use
+  `--hash-class-names` for code named after a person. Full names, IP addresses and Windows short paths such as
+  `C:\Users\ALICE~1` are not covered.
+- `--strip-process-arguments` takes the executable to end at a closing quote, after `.exe`, after the executable of a
+  macOS application bundle, or else at the first space after the last path separator, before the first argument
+  starting with `-`, `/` or a quote. An executable with a space in its last path segment, outside an application
+  bundle, keeps the part before the space. The JVM's own arguments, in `jdk.JVMInformation`, are kept, for JMC's rules.
 
 `--hash-class-names` keeps the dots, so every class still starts with its package, as JMC requires:
 
@@ -103,8 +155,10 @@ has keyed variants, such as `hashClassNames(regex, key)`. The Javadoc of `RuleRe
 
 `JfrRedactor.redact(input, output, redactor)` analyzes the whole recording, then calls
 `StringRedactor.redact(value, locations)` once per distinct string. Returning `value` keeps the string, and any other
-result replaces every copy of it. `RuleRedactor` provides the command line rules (`replaceMatching` for `--match`),
-plus `replaceIf`, `replaceEachMatch`, which replaces only the matches within a string, and keyed hashes.
+result replaces every copy of it. `RuleRedactor` provides the command line rules (`replaceMatching` for `--match`,
+`redactSecrets`, `anonymizeUser` and `stripProcessArguments` for the first three), plus `replaceIf`,
+`replaceEachMatch`, which replaces only the matches within a string, and keyed hashes. `UserIdentity.find(path)` reads
+the identity to anonymize from a recording, in a pass of its own; an identity can also be given.
 
 `orElse` chains redactors, but only asks the second about the strings the first keeps unchanged. When the first hashes
 the thread names in a thread dump, the second never sees the dump, and the rest of it stays as it was. To scrub
@@ -123,9 +177,12 @@ stored it, and `isPooled()` tells whether this copy is in a constant pool or inl
 | Thread dump | `jdk.ThreadDump.result (inline)` |
 | A field of your own event | `com.acme.Sql.sql (inline)` or, if the JDK pooled the value, `com.acme.Sql.sql (pooled)` |
 | A GC cause no event refers to | `jdk.types.GCCause.cause (pooled)` |
+| The value of an environment variable | `jdk.InitialEnvironmentVariable.value (inline) for key HOME` |
 | Class name in JFR 0.9 | `UTFConstant.utf8 (pooled) referred to by Class.name` |
 
-A `replaceIf` rule on the owner and field of your own event catches its inline and pooled values. If a writer pools a
+The value of a type with a `key` field, such as an environment variable or a system property, has its key
+(`getKey()`), and predicates such as `isEnvironmentVariableValue()` and `isProcessCommandLine()` recognize the JDK's
+fields of this kind. A `replaceIf` rule on the owner and field of your own event catches its inline and pooled values. If a writer pools a
 nested type of the event, as JMC's writer does, that type is the owner.
 
 ## Guarantees and limits
@@ -184,13 +241,16 @@ frames top each stack, above the frames of the redaction.
 | Recording | JFR | Content |
 |-----------|-----|---------|
 | `jrockit-r28-transitions.jfr` | 0.9 | JRockit R28 test application, with environment variables and system properties |
+| `jdk8-guimark.jfr` | 0.9 | JDK 8 running the GUIMark JavaFX benchmark on Windows, with environment variables, system properties and the processes of the machine |
 | `jdk9-basic.jfr` | 1.0 | JDK 9 running JConsole, with RMI connection threads |
 | `jdk9-weblogic-medrec.jfr` | 1.0 | WebLogic running the MedRec patient records demo, with SQL, servlet and EJB events |
 | `jdk21-jmc.jfr` | 2.1 | JDK 21 running JMC, with thread dumps containing hidden-class frames |
 | `jmc-writer-pooled.jfr` | 2.0 | Written by JMC's `flightrecorder.writer`, which stores every string in the string pool |
 
-The first four come from the JMC test resources (see [NOTICE](NOTICE)), with personal data in two of them replaced
-using jfr-redact; the last was generated for jfr-redact. The tests redact all of them, verify the results with
+Four come from the JMC test resources (see [NOTICE](NOTICE)), with personal data in two of them replaced using
+jfr-redact, `jdk8-guimark.jfr` comes from the JMC tutorial, with the identity of its user and machine replaced by
+Alice's on HOST01 using jfr-redact, and `jmc-writer-pooled.jfr` was generated for jfr-redact. The tests redact all of
+them, verify the results with
 `RedactionVerifier`, which also runs on any recording, and load them with JMC's parser.
 
 ## How it works

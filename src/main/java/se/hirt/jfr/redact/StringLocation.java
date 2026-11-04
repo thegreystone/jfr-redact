@@ -86,16 +86,42 @@ public final class StringLocation {
 	private static final String[] LEGACY_METHOD_NAME_REFERRERS = {"Method.name"};
 	private static final String[] LEGACY_METHOD_DESCRIPTOR_REFERRERS = {"Method.signature"};
 
+	/**
+	 * The owners and fields of the values of environment variables, system properties and security
+	 * properties: JDK 11+, JDK 9 and 10, JDK 7 and 8, seen in recordings of the JMC tutorial though
+	 * no test recording covers them, and JRockit
+	 */
+	private static final String[] ENVIRONMENT_VARIABLE_VALUES = {"jdk.InitialEnvironmentVariable", "value",
+			"com.oracle.jdk.InitialEnvironmentVariable", "value", "os/initial_environment_variable", "value",
+			"os/environment", "variables.value"};
+	private static final String[] SYSTEM_PROPERTY_VALUES = {"jdk.InitialSystemProperty", "value",
+			"com.oracle.jdk.InitialSystemProperty", "value", "vm/initial_system_property", "value",
+			"vm/system_properties", "properties.value"};
+	private static final String[] SECURITY_PROPERTY_VALUES = {"jdk.InitialSecurityProperty", "value",
+			"jdk.SecurityPropertyModification", "value"};
+	/**
+	 * The command lines of processes, with the same versions as above, and those the JVM started
+	 */
+	private static final String[] PROCESS_COMMAND_LINES = {"jdk.SystemProcess", "commandLine",
+			"com.oracle.jdk.SystemProcess", "commandLine", "os/system_process", "commandLine", "os/processes",
+			"processes.commandLine", "jdk.ProcessStart", "command"};
+
 	private final String owner;
 	private final String field;
 	private final boolean pooled;
 	private final List<String> referrers;
+	private final String key;
 
 	StringLocation(String owner, String field, boolean pooled, List<String> referrers) {
+		this(owner, field, pooled, referrers, null);
+	}
+
+	StringLocation(String owner, String field, boolean pooled, List<String> referrers, String key) {
 		this.owner = owner;
 		this.field = field;
 		this.pooled = pooled;
 		this.referrers = referrers;
+		this.key = key;
 	}
 
 	/**
@@ -142,6 +168,70 @@ public final class StringLocation {
 	 */
 	public List<String> getReferrers() {
 		return referrers;
+	}
+
+	/**
+	 * @return for the value of a type that has a field named {@code key} next to the field named
+	 *         {@code value}, such as an environment variable or a system property, the key it is
+	 *         the value of, for example {@code user.home}, whether key and value are inline or
+	 *         pooled; {@code null} for other fields, and for a value whose key could not be read,
+	 *         such as one referring to a string missing from its chunk's string pool, so a rule on
+	 *         keys must treat a value of such a field without a key as having any key
+	 */
+	public String getKey() {
+		return key;
+	}
+
+	/**
+	 * @return {@code true} if this is the value of an environment variable, whose name is the
+	 *         {@linkplain #getKey() key}: {@code jdk.InitialEnvironmentVariable.value} in JDK 11+,
+	 *         {@code com.oracle.jdk.InitialEnvironmentVariable.value} in JDK 9 and 10,
+	 *         {@code os/initial_environment_variable.value} in JDK 7 and 8 and
+	 *         {@code os/environment.variables.value} in JRockit
+	 */
+	public boolean isEnvironmentVariableValue() {
+		return isOwnerAndField(ENVIRONMENT_VARIABLE_VALUES);
+	}
+
+	/**
+	 * @return {@code true} if this is the value of a system property, whose name is the
+	 *         {@linkplain #getKey() key}: {@code jdk.InitialSystemProperty.value} in JDK 11+,
+	 *         {@code com.oracle.jdk.InitialSystemProperty.value} in JDK 9 and 10,
+	 *         {@code vm/initial_system_property.value} in JDK 7 and 8 and
+	 *         {@code vm/system_properties.properties.value} in JRockit
+	 */
+	public boolean isSystemPropertyValue() {
+		return isOwnerAndField(SYSTEM_PROPERTY_VALUES);
+	}
+
+	/**
+	 * @return {@code true} if this is the value of a security property, whose name is the
+	 *         {@linkplain #getKey() key}: {@code jdk.InitialSecurityProperty.value} and
+	 *         {@code jdk.SecurityPropertyModification.value}
+	 */
+	public boolean isSecurityPropertyValue() {
+		return isOwnerAndField(SECURITY_PROPERTY_VALUES);
+	}
+
+	/**
+	 * @return {@code true} if this is the command line of a process, an executable followed by its
+	 *         arguments: {@code jdk.SystemProcess.commandLine}, the processes running when the
+	 *         recording started, in JDK 11+, {@code com.oracle.jdk.SystemProcess.commandLine} in
+	 *         JDK 9 and 10, {@code os/system_process.commandLine} in JDK 7 and 8,
+	 *         {@code os/processes.processes.commandLine} in JRockit, and
+	 *         {@code jdk.ProcessStart.command}, the processes the JVM started
+	 */
+	public boolean isProcessCommandLine() {
+		return isOwnerAndField(PROCESS_COMMAND_LINES);
+	}
+
+	private boolean isOwnerAndField(String[] ownersAndFields) {
+		for (int i = 0; i < ownersAndFields.length; i += 2) {
+			if (owner.equals(ownersAndFields[i]) && field.equals(ownersAndFields[i + 1])) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -319,6 +409,9 @@ public final class StringLocation {
 	@Override
 	public String toString() {
 		String s = owner + "." + field + (pooled ? " (pooled)" : " (inline)");
+		if (key != null) {
+			s += " for key " + key;
+		}
 		return referrers.isEmpty() ? s : s + " referred to by " + String.join(", ", referrers);
 	}
 }

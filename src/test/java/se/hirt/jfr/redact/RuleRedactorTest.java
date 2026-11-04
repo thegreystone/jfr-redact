@@ -347,9 +347,28 @@ class RuleRedactorTest {
 
 	@Test
 	void replacesEachMatchKeepingTheRest() {
-		RuleRedactor redactor = RuleRedactor.builder().replaceEachMatch("\\d{4}", "$x\\").replace("*", "other").build();
+		RuleRedactor redactor = RuleRedactor.builder().replaceEachMatch("\\d{4}", "$x\\").replace("no digits", "other")
+				.build();
 		assertEquals("pin $x\\ and $x\\", redactor.redact("pin 1234 and 5678"));
 		assertEquals("other", redactor.redact("no digits"), "a string without a match is left to later rules");
+	}
+
+	/**
+	 * A substitution passes its result on, so that the substitutions all apply and a rule deciding
+	 * the whole string sees what they made of it, while a fixed replacement decides
+	 */
+	@Test
+	void substitutionsPassTheirResultOn() {
+		String email = "[\\w.+-]+@[\\w-]+(\\.[\\w-]+)*\\.[A-Za-z]{2,}";
+		RuleRedactor redactor = RuleRedactor.builder().replace("*/Users/alice*", "*/Users/user*")
+				.replaceEachMatch(email, "<EMAIL>").build();
+		assertEquals("-Dlog=/Users/user/app.log -Dnotify=<EMAIL>",
+				redactor.redact("-Dlog=/Users/alice/app.log -Dnotify=alice@example.com"));
+
+		RuleRedactor deciding = RuleRedactor.builder().replace("java.util.*", "utilz.*").replace("utilz.HashMap", "map")
+				.replace("*Map", "decided").replace("*", "unreached").build();
+		assertEquals("map", deciding.redact("java.util.HashMap"), "the deciding rule sees the substitution");
+		assertEquals("decided", deciding.redact("TreeMap"), "a fixed replacement decides");
 	}
 
 	/**

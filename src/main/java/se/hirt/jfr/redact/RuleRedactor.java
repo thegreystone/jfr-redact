@@ -52,8 +52,13 @@ import javax.crypto.spec.SecretKeySpec;
 import se.hirt.jfr.redact.internal.Utf8;
 
 /**
- * A {@link StringRedactor} applying rules. Rules are tried in order, and the first matching rule
- * decides. The kinds of rules are:
+ * A {@link StringRedactor} applying rules. Rules are tried in order: a substitution, which replaces
+ * parts of a string and keeps the rest, passes its result on to the following rules, and the first
+ * other rule that matches decides. The substitutions are {@link Builder#replace(String, String)}
+ * with a {@code *} in the replacement and {@link Builder#replaceEachMatch(String, String)}. The
+ * built-in rules, {@link Builder#redactSecrets()}, {@link Builder#stripProcessArguments()} and
+ * {@link Builder#anonymizeUser(UserIdentity)}, apply last, to the result of the others, wherever
+ * they were added, so the other rules see the strings as stored. The kinds of rules are:
  * <ul>
  * <li>{@link Builder#hashThreadNames()} replaces thread names with {@code Thread-<hash>} and thread
  * group names with {@code ThreadGroup-<hash>}.</li>
@@ -74,6 +79,9 @@ import se.hirt.jfr.redact.internal.Utf8;
  * regular expression.</li>
  * <li>{@link Builder#replaceEachMatch(String, String)} replaces each match of a regular expression
  * within strings.</li>
+ * <li>{@link Builder#redactSecrets()} replaces secrets, {@link Builder#stripProcessArguments()} the
+ * arguments of other processes and {@link Builder#anonymizeUser(UserIdentity)} home directories,
+ * user names, host names and e-mail addresses.</li>
  * </ul>
  * A pattern may start and/or end with {@code *}, which matches any characters, so matching is
  * always one of {@code equals}, {@code startsWith}, {@code endsWith} or {@code contains}:
@@ -137,9 +145,18 @@ import se.hirt.jfr.redact.internal.Utf8;
  */
 public final class RuleRedactor implements StringRedactor {
 	private final Rule[] rules;
+	/** The built-in rules, applied in this order to the result of the others */
+	private final Rule[] finalRules;
+	/**
+	 * Whether the values of keys with secret names are replaced, see
+	 * {@link Builder#redactSecrets()}
+	 */
+	private final boolean redactSecretValues;
 
-	private RuleRedactor(Rule[] rules) {
+	private RuleRedactor(Rule[] rules, Rule[] finalRules, boolean redactSecretValues) {
 		this.rules = rules;
+		this.finalRules = finalRules;
+		this.redactSecretValues = redactSecretValues;
 	}
 
 	public static Builder builder() {
@@ -149,6 +166,15 @@ public final class RuleRedactor implements StringRedactor {
 	/** A rule, returning the replacement or {@code null} if it does not apply */
 	private interface Rule {
 		String apply(String value, List<StringLocation> locations);
+
+		/**
+		 * Replaces parts of the string, keeping the rest, and passes the result on to the following
+		 * rules, or returns {@code null} if the rule is not a substitution but decides with
+		 * {@link #apply}
+		 */
+		default String substitute(String text, List<StringLocation> locations) {
+			return null;
+		}
 
 		/**
 		 * Rewrites embedded values, or returns {@code null} to apply the rule to the whole string
@@ -162,6 +188,9 @@ public final class RuleRedactor implements StringRedactor {
 	/** Builds a {@link RuleRedactor} from rules, tried in the order added */
 	public static final class Builder {
 		private final List<Rule> rules = new ArrayList<>();
+		private boolean redactSecrets;
+		private boolean stripProcessArguments;
+		private UserIdentity user;
 		/** Where the one class name rule is among the rules, or -1 before the first expression */
 		private int classNames = -1;
 
@@ -169,7 +198,9 @@ public final class RuleRedactor implements StringRedactor {
 		}
 
 		/**
-		 * Adds a rule replacing strings matching the pattern.
+		 * Adds a rule replacing strings matching the pattern. With a {@code *} in the replacement,
+		 * the rule keeps the rest of the string and passes the result on to the following rules;
+		 * with a fixed replacement, it decides.
 		 *
 		 * @throws IllegalArgumentException
 		 *             if the pattern has a {@code *} other than first or last, or the replacement
@@ -227,6 +258,66 @@ public final class RuleRedactor implements StringRedactor {
 		 */
 		public Builder replaceEachMatch(String regex, String replacement) {
 			rules.add(new EachMatchRule(Pattern.compile(regex), replacement));
+			return this;
+		}
+
+		/**
+		 * Replaces secrets with {@code <REDACTED>}, after the other rules, wherever this is called
+		 * among them:
+		 * <ul>
+		 * <li>the value of an environment variable, system property or security property whose name
+		 * says it is secret, such as {@code DB_PASSWORD}, {@code javax.net.ssl.keyStorePassword} or
+		 * {@code DD_API_KEY}, as a whole, and so every copy of it, except empty values,
+		 * {@code true} and {@code false}; a value whose key cannot be read is replaced, see
+		 * {@link StringLocation#getKey()};</li>
+		 * <li>in every string, the secret part of credentials with a recognizable format: AWS
+		 * access keys, GitHub, Slack, Google, Stripe and {@code sk-} API keys, JSON web tokens,
+		 * private keys in PEM format, bearer tokens and {@code Authorization} values, passwords in
+		 * URLs such as {@code https://user:password@host}, and the values of arguments and
+		 * parameters with secret names, such as {@code -Ddb.password=value},
+		 * {@code --api-key value}, {@code DB_TOKEN=value} and {@code ?password=value}.</li>
+		 * </ul>
+		 * Secrets in other free text, such as a password passed as a plain argument, are not found.
+		 */
+		public Builder redactSecrets() {
+			redactSecrets = true;
+			return this;
+		}
+
+		/**
+		 * Replaces the arguments of the command lines of processes, those running when the
+		 * recording started and those the JVM started, with {@code <REDACTED>}, keeping the
+		 * executable, after the other rules, see {@link StringLocation#isProcessCommandLine()}. The
+		 * JVM's own arguments, in {@code jdk.JVMInformation}, are kept. The executable ends at a
+		 * closing quote, after {@code .exe}, at the end of the executable of a macOS application
+		 * bundle, and else at the first space after its last path separator, or before the first
+		 * argument starting with {@code -}, {@code /} or a quote, so an executable with a space in
+		 * its last path segment, outside an application bundle, keeps only the part before the
+		 * space.
+		 */
+		public Builder stripProcessArguments() {
+			stripProcessArguments = true;
+			return this;
+		}
+
+		/**
+		 * Replaces the home directories, user names and host names of the identity, and e-mail
+		 * addresses, after the other rules, see {@link UserIdentity}:
+		 * <ul>
+		 * <li>a home directory, wherever it occurs as a path, keeping the path to it, so that
+		 * {@code /Users/alice/app.log} becomes {@code /Users/user/app.log}, also with the other
+		 * separator, doubled backslashes or {@code %20} for spaces, ignoring case;</li>
+		 * <li>a user or host name, wherever it stands alone, not next to a letter or digit,
+		 * ignoring case, with {@code user} or {@code host};</li>
+		 * <li>an e-mail address, with {@code <EMAIL>}.</li>
+		 * </ul>
+		 * Class, method, package and module names and method descriptors are never changed, nor are
+		 * the frames of thread dumps: hash those with {@link #hashClassNames(String)} and
+		 * {@link #hashMethodNames(String)}. In thread dumps and old object descriptions, names are
+		 * replaced in thread names only.
+		 */
+		public Builder anonymizeUser(UserIdentity identity) {
+			user = Objects.requireNonNull(identity, "identity");
 			return this;
 		}
 
@@ -396,36 +487,62 @@ public final class RuleRedactor implements StringRedactor {
 		}
 
 		public RuleRedactor build() {
-			return new RuleRedactor(rules.toArray(new Rule[0]));
+			List<Rule> finalRules = new ArrayList<>();
+			if (stripProcessArguments) {
+				finalRules.add(new ProcessArgumentsRule());
+			}
+			if (redactSecrets) {
+				finalRules.add(new SecretFormatRule());
+			}
+			if (user != null) {
+				finalRules.add(new AnonymizeUserRule(new UserAnonymizer(user)));
+			}
+			return new RuleRedactor(rules.toArray(new Rule[0]), finalRules.toArray(new Rule[0]), redactSecrets);
 		}
 	}
 
 	@Override
 	public String redact(String value, List<StringLocation> locations) {
+		// Judged on the value as stored, and replacing it whatever the other rules make of it
+		if (redactSecretValues && isSecretValue(value, locations)) {
+			return Secrets.REDACTED;
+		}
+		StringLocation composite = null;
 		for (StringLocation location : locations) {
 			if (location.isComposite()) {
-				String text = value;
-				for (Rule rule : rules) {
-					String rewritten = rule.rewriteComposite(text, location);
-					if (rewritten != null) {
-						text = rewritten;
-					} else {
-						String replacement = rule.apply(text, locations);
-						if (replacement != null) {
-							return replacement;
-						}
-					}
-				}
-				return text;
+				composite = location;
+				break;
 			}
 		}
+		String result = apply(rules, value, locations, composite);
+		return finalRules.length == 0 ? result : apply(finalRules, result, locations, composite);
+	}
+
+	/**
+	 * Applies the rules in order: a substitution, and a specialized rule rewriting a composite
+	 * string, pass their result on, and the first other rule that matches decides
+	 */
+	private static String apply(Rule[] rules, String value, List<StringLocation> locations, StringLocation composite) {
+		String text = value;
 		for (Rule rule : rules) {
-			String replacement = rule.apply(value, locations);
+			String substituted = rule.substitute(text, locations);
+			if (substituted != null) {
+				text = substituted;
+				continue;
+			}
+			if (composite != null) {
+				String rewritten = rule.rewriteComposite(text, composite);
+				if (rewritten != null) {
+					text = rewritten;
+					continue;
+				}
+			}
+			String replacement = rule.apply(text, locations);
 			if (replacement != null) {
 				return replacement;
 			}
 		}
-		return value;
+		return text;
 	}
 
 	/**
@@ -560,8 +677,22 @@ public final class RuleRedactor implements StringRedactor {
 			return parts;
 		}
 
+		/** A replacement keeping part of the string makes the rule a substitution */
 		@Override
 		public String apply(String value, List<StringLocation> locations) {
+			return parts.length > 1 ? null : match(value);
+		}
+
+		@Override
+		public String substitute(String text, List<StringLocation> locations) {
+			if (parts.length == 1) {
+				return null;
+			}
+			String replaced = match(text);
+			return replaced == null ? text : replaced;
+		}
+
+		private String match(String value) {
 			if (text.isEmpty() && (anyStart || anyEnd)) {
 				return parts[0];
 			}
@@ -600,14 +731,82 @@ public final class RuleRedactor implements StringRedactor {
 
 		@Override
 		public String apply(String value, List<StringLocation> locations) {
-			Matcher m = pattern.matcher(value);
-			return m.find() ? m.replaceAll(replacement) : null;
+			return null;
 		}
 
 		@Override
-		public String rewriteComposite(String text, StringLocation location) {
+		public String substitute(String text, List<StringLocation> locations) {
 			Matcher m = pattern.matcher(text);
 			return m.find() ? m.replaceAll(replacement) : text;
+		}
+	}
+
+	/**
+	 * @return {@code true} if the value is the value of an environment variable, system property or
+	 *         security property with a secret name, or whose name cannot be read, and neither empty
+	 *         nor a boolean, see {@link Builder#redactSecrets()}
+	 */
+	private static boolean isSecretValue(String value, List<StringLocation> locations) {
+		if (value.isEmpty() || value.equalsIgnoreCase("true") || value.equalsIgnoreCase("false")) {
+			return false;
+		}
+		for (StringLocation location : locations) {
+			if ((location.isEnvironmentVariableValue() || location.isSystemPropertyValue()
+					|| location.isSecurityPropertyValue())
+					&& (location.getKey() == null || Secrets.isSecretName(location.getKey()))) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Replaces credentials with recognizable formats, see {@link Builder#redactSecrets()} */
+	private static final class SecretFormatRule implements Rule {
+		@Override
+		public String apply(String value, List<StringLocation> locations) {
+			return null;
+		}
+
+		@Override
+		public String substitute(String text, List<StringLocation> locations) {
+			return Secrets.redactFormats(text);
+		}
+	}
+
+	/** See {@link Builder#stripProcessArguments()} */
+	private static final class ProcessArgumentsRule implements Rule {
+		@Override
+		public String apply(String value, List<StringLocation> locations) {
+			return null;
+		}
+
+		@Override
+		public String substitute(String text, List<StringLocation> locations) {
+			for (StringLocation location : locations) {
+				if (location.isProcessCommandLine()) {
+					return ProcessArguments.strip(text);
+				}
+			}
+			return text;
+		}
+	}
+
+	/** See {@link Builder#anonymizeUser(UserIdentity)} */
+	private static final class AnonymizeUserRule implements Rule {
+		private final UserAnonymizer anonymizer;
+
+		AnonymizeUserRule(UserAnonymizer anonymizer) {
+			this.anonymizer = anonymizer;
+		}
+
+		@Override
+		public String apply(String value, List<StringLocation> locations) {
+			return null;
+		}
+
+		@Override
+		public String substitute(String text, List<StringLocation> locations) {
+			return anonymizer.anonymize(text, locations);
 		}
 	}
 

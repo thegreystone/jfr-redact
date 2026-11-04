@@ -92,6 +92,10 @@ final class LocationCollector implements ChunkParserListener {
 	 */
 	private static final int RECENT_BITS = 10;
 	private static final long GOLDEN = 0x9E3779B97F4A7C15L;
+	/**
+	 * Per pending value: key pool, value entry or -1, value pool, context, type index, value field
+	 */
+	private static final int PENDING_INTS = 6;
 
 	private final StringCountMap strings = new StringCountMap();
 	private final StringDecoder decoder = new StringDecoder();
@@ -104,6 +108,22 @@ final class LocationCollector implements ChunkParserListener {
 	private final List<String> fieldLocationOwners = new ArrayList<>();
 	private final List<String> fieldLocationPaths = new ArrayList<>();
 	private final List<Boolean> fieldLocationConstant = new ArrayList<>();
+	private final List<String> fieldLocationKeys = new ArrayList<>();
+	/**
+	 * Per type of the chunk, the field named {@code key} and the field named {@code value} of a
+	 * type with both, holding single strings, such as an environment variable, or -1
+	 */
+	private int[] keyFields = new int[0];
+	private int[] valueFields = new int[0];
+	/**
+	 * The values whose key refers to a constant, which the chunk may store after the event, as
+	 * groups of {@link #PENDING_INTS}: the pool and key of the key, as two ints each for the key,
+	 * the value as an entry or a pool and key, the context, the type and the value field
+	 */
+	private long[] pendingKeys = new long[64];
+	private int[] pendingInts = new int[64 * PENDING_INTS];
+	private long[] pendingValueKeys = new long[64];
+	private int pendingCount;
 
 	/** Referrer sets, id 0 being the empty set */
 	private final Map<List<String>, Integer> referrerSetIds = new HashMap<>();
@@ -541,6 +561,16 @@ final class LocationCollector implements ChunkParserListener {
 				metadataStrings.add(s);
 			}
 		}
+		keyFields = new int[types.size()];
+		valueFields = new int[types.size()];
+		for (int i = 0; i < types.size(); i++) {
+			Type type = types.getByIndex(i);
+			keyFields[i] = singleStringField(type, "key");
+			valueFields[i] = keyFields[i] < 0 ? -1 : singleStringField(type, "value");
+			if (valueFields[i] < 0) {
+				keyFields[i] = -1;
+			}
+		}
 		contextOwners.clear();
 		contextPaths.clear();
 		contextConstant.clear();
@@ -607,6 +637,7 @@ final class LocationCollector implements ChunkParserListener {
 	 */
 	@Override
 	public void onChunkEnd() {
+		resolvePendingKeys();
 		for (int c = 0; c < constants.size(); c++) {
 			ConstantRecord constant = constants.record(c);
 			if (constant.count == 0) {
@@ -726,9 +757,15 @@ final class LocationCollector implements ChunkParserListener {
 	 */
 	private void walkEvent(RecordingStream stream, Type type, int context) throws IOException {
 		int[] fields = type.containsFoldingReferences ? type.locationFields : type.fields;
+		int keyField = keyFields[type.index];
+		if (keyField >= 0) {
+			keyEntry = valueEntry = keyPool = valuePool = -1;
+		}
 		for (int i = 0; i < fields.length; i++) {
 			int op = fields[i];
-			if ((op & ChunkTypes.ARRAY_FLAG) == 0) {
+			if (keyField >= 0 && (i == keyField || i == valueFields[type.index])) {
+				readKeyOrValue(stream, op, type, i, context);
+			} else if ((op & ChunkTypes.ARRAY_FLAG) == 0) {
 				readEventValue(stream, op, type, i, context);
 			} else {
 				int length = legacy ? stream.readRawInt() : (int) stream.readVarint();
@@ -749,6 +786,135 @@ final class LocationCollector implements ChunkParserListener {
 				}
 			}
 		}
+		if (keyField >= 0) {
+			locateValue(type, context);
+		}
+	}
+
+	/**
+	 * The field named {@code key} or {@code value} of the type, if it holds a single string, inline
+	 * or as a reference to a folding constant, such as the string pool
+	 *
+	 * @return the index of the field, or -1
+	 */
+	private int singleStringField(Type type, String name) {
+		if (type.fieldNames == null) {
+			return -1;
+		}
+		for (int i = 0; i < type.fieldNames.length; i++) {
+			if (type.fieldNames[i].equals(name)) {
+				int op = type.fields[i];
+				int kind = op & ChunkTypes.KIND_MASK;
+				boolean string = kind == ChunkTypes.KIND_STRING || kind == ChunkTypes.KIND_UTF8
+						|| kind == ChunkTypes.KIND_UTF16
+						|| kind == ChunkTypes.KIND_REF && types.getByIndex(op >>> ChunkTypes.TYPE_SHIFT).folds;
+				return string && (op & ChunkTypes.ARRAY_FLAG) == 0 ? i : -1;
+			}
+		}
+		return -1;
+	}
+
+	/*
+	 * The key and value of the event or struct being walked: the key is located as any string, the
+	 * value at the field for its key, once both are read, see locateValue. Each holds an entry, a
+	 * pool and key, or nothing for a null string.
+	 */
+	private int keyEntry;
+	private int keyPool;
+	private long keyKey;
+	private int valueEntry;
+	private int valuePool;
+	private long valueKey;
+
+	private void readKeyOrValue(RecordingStream stream, int op, Type type, int field, int context) throws IOException {
+		boolean key = field == keyFields[type.index];
+		int entry = -1;
+		int pool = -1;
+		long poolKey = 0;
+		int kind = op & ChunkTypes.KIND_MASK;
+		if (kind == ChunkTypes.KIND_REF) {
+			pool = op >>> ChunkTypes.TYPE_SHIFT;
+			poolKey = readKey(stream, types.getByIndex(pool).keyKind);
+		} else {
+			int result = decoder.read(stream, kind);
+			if (result == StringDecoder.STRING) {
+				entry = strings.add(decoder.array, decoder.offset, decoder.length, StringScanner.INLINE);
+			} else if (result == StringDecoder.REFERENCE && types.stringTypeIndex >= 0) {
+				pool = types.stringTypeIndex;
+				poolKey = decoder.reference;
+			}
+		}
+		if (key) {
+			keyEntry = entry;
+			keyPool = pool;
+			keyKey = poolKey;
+			if (entry >= 0) {
+				addPair(entry, locationId(fieldLocation(context, type, field), 0));
+			} else if (pool >= 0) {
+				addLink(pool, poolKey, constantValueLocation(context, type, field), null);
+			}
+		} else {
+			valueEntry = entry;
+			valuePool = pool;
+			valueKey = poolKey;
+		}
+	}
+
+	/**
+	 * Locates the value of the event or struct just walked at its field for its key, now if the key
+	 * is inline, or when the chunk ends if it refers to a constant, see resolvePendingKeys
+	 */
+	private void locateValue(Type type, int context) {
+		if (valueEntry < 0 && valuePool < 0) {
+			return;
+		}
+		if (keyPool >= 0) {
+			if (pendingCount == pendingKeys.length) {
+				pendingKeys = Arrays.copyOf(pendingKeys, pendingCount * 2);
+				pendingValueKeys = Arrays.copyOf(pendingValueKeys, pendingCount * 2);
+				pendingInts = Arrays.copyOf(pendingInts, pendingCount * 2 * PENDING_INTS);
+			}
+			int at = pendingCount * PENDING_INTS;
+			pendingKeys[pendingCount] = keyKey;
+			pendingValueKeys[pendingCount] = valueKey;
+			pendingInts[at] = keyPool;
+			pendingInts[at + 1] = valueEntry;
+			pendingInts[at + 2] = valuePool;
+			pendingInts[at + 3] = context;
+			pendingInts[at + 4] = type.index;
+			pendingInts[at + 5] = valueFields[type.index];
+			pendingCount++;
+		} else {
+			locateValue(keyEntry < 0 ? null : strings.getString(keyEntry), valueEntry, valuePool, valueKey, context,
+					type, valueFields[type.index]);
+		}
+	}
+
+	private void locateValue(String key, int entry, int pool, long poolKey, int context, Type type, int field) {
+		String owner = contextOwners.get(context);
+		String path = fieldPath(context, type, field);
+		if (entry >= 0) {
+			addPair(entry, locationId(fieldLocationId(owner, path, contextConstant.get(context), key), 0));
+		} else {
+			addLink(pool, poolKey, fieldLocationId(owner, path, true, key), null);
+		}
+	}
+
+	/**
+	 * Locates the values whose key refers to a constant, before the constants are resolved: a key
+	 * whose constant holds no string of its own, such as one missing from the chunk or an alias of
+	 * another entry of the string pool, is not resolved, and the value is located without a key,
+	 * see {@link StringLocation#getKey()}
+	 */
+	private void resolvePendingKeys() {
+		for (int i = 0; i < pendingCount; i++) {
+			int at = i * PENDING_INTS;
+			ConstantRecord keyConstant = constants.get(pendingInts[at], pendingKeys[i]);
+			String key = keyConstant.count > 0 ? strings.getString(keyConstant.entries[0]) : null;
+			locateValue(key, pendingInts[at + 1], pendingInts[at + 2], pendingValueKeys[i], pendingInts[at + 3],
+					types.getByIndex(pendingInts[at + 4]), pendingInts[at + 5]);
+		}
+		pendingCount = 0;
 	}
 
 	private void readEventValue(RecordingStream stream, int op, Type type, int field, int context) throws IOException {
@@ -1019,16 +1185,22 @@ final class LocationCollector implements ChunkParserListener {
 	}
 
 	private int fieldLocationId(String owner, String path, boolean constant) {
-		String key = owner + '\0' + path + '\0' + constant;
-		Integer id = fieldLocationIds.get(key);
-		if (id == null) {
-			id = fieldLocationOwners.size();
+		return fieldLocationId(owner, path, constant, null);
+	}
+
+	/** The field location, distinct per key for the values of a type with keys */
+	private int fieldLocationId(String owner, String path, boolean constant, String key) {
+		String id = owner + '\0' + path + '\0' + constant + (key == null ? "" : '\0' + key);
+		Integer location = fieldLocationIds.get(id);
+		if (location == null) {
+			location = fieldLocationOwners.size();
 			fieldLocationOwners.add(owner);
 			fieldLocationPaths.add(path);
 			fieldLocationConstant.add(constant);
-			fieldLocationIds.put(key, id);
+			fieldLocationKeys.add(key);
+			fieldLocationIds.put(id, location);
 		}
-		return id;
+		return location;
 	}
 
 	/** The id of the constant's set of referrers, computed once per constant and chunk */
@@ -1084,9 +1256,9 @@ final class LocationCollector implements ChunkParserListener {
 		int id = locationIds.get(key);
 		if (id < 0) {
 			id = locations.size();
-			locations.add(
-					new StringLocation(fieldLocationOwners.get(fieldLocation), fieldLocationPaths.get(fieldLocation),
-							fieldLocationConstant.get(fieldLocation), referrerSets.get(referrerSet)));
+			locations.add(new StringLocation(fieldLocationOwners.get(fieldLocation),
+					fieldLocationPaths.get(fieldLocation), fieldLocationConstant.get(fieldLocation),
+					referrerSets.get(referrerSet), fieldLocationKeys.get(fieldLocation)));
 			locationIds.put(key, id);
 		}
 		return id;

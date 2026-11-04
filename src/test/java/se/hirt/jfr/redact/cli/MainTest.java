@@ -33,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
@@ -45,6 +46,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -55,6 +57,7 @@ import jdk.jfr.Event;
 import jdk.jfr.Name;
 import jdk.jfr.Recording;
 import jdk.jfr.StackTrace;
+import se.hirt.jfr.redact.UserIdentity;
 
 class MainTest {
 	@Test
@@ -292,6 +295,52 @@ class MainTest {
 			assertTrue(error.contains(corrupt.toString()), error);
 		}
 		assertFalse(Files.exists(output));
+	}
+
+	/**
+	 * Without options, redact redacts secrets, anonymizes the user and strips process arguments,
+	 * reading the identity from the recording's environment variables
+	 */
+	@Test
+	void redactsSecretsAndTheUserByDefault(@TempDir
+	Path dir) throws Exception {
+		String home = System.getProperty("user.home");
+		String user = System.getProperty("user.name");
+		UserIdentity identity = new UserIdentity(Set.of(home), Set.of(user), Set.of());
+		assumeTrue(identity.homeDirectories().contains(home) && identity.userNames().contains(user),
+				"the account is generic, so it is kept");
+		Path input = dir.resolve("input.jfr");
+		try (Recording recording = new Recording()) {
+			recording.enable("jdk.InitialEnvironmentVariable");
+			recording.enable("jdk.InitialSystemProperty");
+			recording.enable("jdk.JVMInformation");
+			recording.start();
+			recording.stop();
+			recording.dump(input);
+		}
+		assertTrue(contains(input, home), "the recording stores the home directory");
+		Path output = dir.resolve("output.jfr");
+		String printed = run("redact", input.toString(), output.toString());
+		assertTrue(printed.contains("Anonymizing 1 home directories"), printed);
+		assertFalse(contains(output, home), "the home directory remains");
+		assertFalse(contains(output, user), "the user name remains");
+
+		// Given any option, only the options given apply, so a rule can be tried on its own
+		Path tried = dir.resolve("tried.jfr");
+		printed = run("redact", "--match", "no string contains this", input.toString(), tried.toString());
+		assertFalse(printed.contains("Anonymizing"), printed);
+		assertTrue(contains(tried, home), "the defaults applied with an option given");
+	}
+
+	private static boolean contains(Path file, String value) throws Exception {
+		byte[] bytes = Files.readAllBytes(file);
+		byte[] needle = value.getBytes(StandardCharsets.UTF_8);
+		for (int i = 0; i + needle.length <= bytes.length; i++) {
+			if (Arrays.equals(bytes, i, i + needle.length, needle, 0, needle.length)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private static String stringsOf(Path recording, Path tsv) throws Exception {

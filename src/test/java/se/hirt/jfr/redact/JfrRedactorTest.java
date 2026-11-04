@@ -223,7 +223,7 @@ class JfrRedactorTest {
 
 	@ParameterizedTest
 	@CsvSource({"jdk9-basic.jfr, 1, false", "jdk9-basic.jfr, 1, true", "jdk9-weblogic-medrec.jfr, 2, false",
-			"jdk9-weblogic-medrec.jfr, 2, true"})
+			"jdk9-weblogic-medrec.jfr, 2, true", "jdk8-guimark.jfr, 1, false"})
 	void keepingEverythingCopiesTheRecording(String name, int chunks, boolean equalNewString, @TempDir
 	Path dir) throws Exception {
 		Path input = fixture(name);

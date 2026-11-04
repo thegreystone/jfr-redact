@@ -80,11 +80,12 @@ class FixtureTest {
 	private static final Pattern FRAME = Pattern.compile("^\\s*at ([^(]+)\\.[^.(]+\\((?:[^()/]*/)?([^()]*)\\)$");
 
 	@ParameterizedTest
-	@ValueSource(strings = {"jrockit-r28-transitions.jfr", "jdk9-basic.jfr", "jdk9-weblogic-medrec.jfr",
-			"jdk21-jmc.jfr", "jmc-writer-pooled.jfr"})
+	@ValueSource(strings = {"jrockit-r28-transitions.jfr", "jdk8-guimark.jfr", "jdk9-basic.jfr",
+			"jdk9-weblogic-medrec.jfr", "jdk21-jmc.jfr", "jmc-writer-pooled.jfr"})
 	void redactsEveryStringCorrectly(String name, @TempDir
 	Path dir) throws Exception {
-		boolean jdkCanParse = !name.startsWith("jrockit");
+		// The JDK's parser reads JFR 1.0+, not the JFR 0.9 of JRockit and JDK 7 and 8
+		boolean jdkCanParse = Files.readAllBytes(recording(name))[5] != 0;
 		List<String> problems = RedactionVerifier.verify(recording(name), dir.resolve(name),
 				RedactionVerifier.aggressive(4), jdkCanParse);
 		assertEquals(List.of(), problems);
@@ -916,8 +917,12 @@ class FixtureTest {
 			}
 			return value;
 		});
+		// The values of security properties are located per key, see KeyedLocationTest
 		fields.forEach((value, field) -> assertEquals(List.of(field + " (pooled)"),
-				locations.get(value).stream().map(StringLocation::toString).toList(), value));
+				locations.get(value).stream()
+						.map(l -> l.getOwner() + "." + l.getField() + (l.isPooled() ? " (pooled)" : " (inline)"))
+						.distinct().toList(),
+				value));
 
 		Path output = dir.resolve("redacted.jfr");
 		RedactionResult result = JfrRedactor.redact(input, output,

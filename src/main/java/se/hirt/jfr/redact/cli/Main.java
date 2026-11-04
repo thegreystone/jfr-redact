@@ -42,6 +42,7 @@ import java.util.List;
 
 import se.hirt.jfr.redact.parser.StreamingChunkParser;
 import se.hirt.jfr.redact.InvalidRecordingException;
+import se.hirt.jfr.redact.UserIdentity;
 import se.hirt.jfr.redact.RuleRedactor;
 import se.hirt.jfr.redact.JfrRedactor;
 import se.hirt.jfr.redact.RedactionResult;
@@ -51,7 +52,8 @@ import se.hirt.jfr.redact.scan.StringScanner;
 public final class Main {
 	private static final String USAGE = """
 			Usage: jfr-redact scan [options] <recording.jfr>
-			       jfr-redact redact [--hash-thread-names] [--hash-class-names <regex>]...
+			       jfr-redact redact [--redact-secrets] [--anonymize-user] [--strip-process-arguments]
+			                         [--hash-thread-names] [--hash-class-names <regex>]...
 			                         [--hash-method-names <regex>]...
 			                         [--rename-package <package> <new name>]...
 			                         [--replace <pattern> <replacement>]... [--match <regex>]...
@@ -77,9 +79,24 @@ public final class Main {
 			                 every event decodes to its declared size
 
 			Redact replaces strings everywhere they are stored in the recording, and writes the result to
-			a new recording. Rules are tried in the order given, with --match last.
+			a new recording. Rules are tried in the order given, with --match last, and the first
+			three options after them. Without options, redact applies those three; given any option,
+			it applies only the options given.
 
 			Options:
+			  --redact-secrets      Replace secrets with <REDACTED>: the values of environment
+			                        variables and system and security properties with secret names,
+			                        such as DB_PASSWORD or *_API_KEY, and anywhere, credentials with
+			                        known formats (AWS, GitHub, Slack, JWT, private keys, bearer
+			                        tokens, URL passwords) and the values of -Dname=, --name= and
+			                        name= with secret names
+			  --anonymize-user      Replace the home directories, user names and host names found in
+			                        the recording's environment variables and system properties
+			                        wherever they occur, keeping paths, and e-mail addresses. Names
+			                        of classes, methods, packages and modules are kept
+			  --strip-process-arguments
+			                        Replace the arguments of the command lines of other processes
+			                        with <REDACTED>, keeping the executables
 			  --hash-thread-names   Replace thread names with Thread-<hash of the name> and thread group
 			                        names with ThreadGroup-<hash of the name>
 			  --hash-class-names <regex>
@@ -228,6 +245,7 @@ public final class Main {
 		List<String> matches = new ArrayList<>();
 		RuleRedactor.Builder rules = RuleRedactor.builder();
 		boolean anyRule = false;
+		boolean anonymizeUser = false;
 		String replacement = "<REDACTED>";
 		List<Path> files = new ArrayList<>();
 		for (int i = 1; i < args.length; i++) {
@@ -256,6 +274,18 @@ public final class Main {
 				anyRule = true;
 			}
 			case "--replacement" -> replacement = requireValue(args, ++i);
+			case "--redact-secrets" -> {
+				rules.redactSecrets();
+				anyRule = true;
+			}
+			case "--anonymize-user" -> {
+				anonymizeUser = true;
+				anyRule = true;
+			}
+			case "--strip-process-arguments" -> {
+				rules.stripProcessArguments();
+				anyRule = true;
+			}
 			default -> {
 				if (args[i].startsWith("-")) {
 					err.println("Unexpected argument: " + args[i]);
@@ -266,9 +296,28 @@ public final class Main {
 			}
 			}
 		}
-		if (files.size() != 2 || (matches.isEmpty() && !anyRule)) {
+		if (files.size() != 2) {
 			err.print(USAGE);
 			return 2;
+		}
+		if (matches.isEmpty() && !anyRule) {
+			rules.redactSecrets().stripProcessArguments();
+			anonymizeUser = true;
+		}
+		if (anonymizeUser) {
+			UserIdentity identity;
+			try {
+				identity = UserIdentity.find(files.get(0));
+			} catch (InvalidRecordingException e) {
+				throw invalid(files.get(0), e);
+			}
+			out.printf("Anonymizing %d home directories, %d user names and %d host names%n",
+					identity.homeDirectories().size(), identity.userNames().size(), identity.hostNames().size());
+			if (identity.isEmpty()) {
+				err.println("Warning: the recording names no home directory, user or host, "
+						+ "so only e-mail addresses are anonymized");
+			}
+			rules.anonymizeUser(identity);
 		}
 		// After parsing, since --match comes last and --replacement may follow it
 		for (String regex : matches) {

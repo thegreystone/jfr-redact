@@ -52,7 +52,7 @@ import se.hirt.jfr.redact.examples.RedactPatientData;
 class JmcCompatibilityTest {
 	@ParameterizedTest
 	@ValueSource(strings = {"jdk9-basic.jfr", "jdk9-weblogic-medrec.jfr", "jdk21-jmc.jfr", "jmc-writer-pooled.jfr",
-			"jrockit-r28-transitions.jfr"})
+			"jrockit-r28-transitions.jfr", "jdk8-guimark.jfr"})
 	void readsTheFixturesThemselves(String name) throws Exception {
 		JmcModel control = JmcModel.load(FixtureTest.recording(name));
 		assertEquals(List.of(), control.problems(), "the control: the fixture itself");
@@ -62,7 +62,7 @@ class JmcCompatibilityTest {
 
 	@ParameterizedTest
 	@ValueSource(strings = {"jdk9-basic.jfr", "jdk9-weblogic-medrec.jfr", "jdk21-jmc.jfr", "jmc-writer-pooled.jfr",
-			"jrockit-r28-transitions.jfr"})
+			"jrockit-r28-transitions.jfr", "jdk8-guimark.jfr"})
 	void readsRecordingsWithEveryNameHashed(String name, @TempDir
 	Path dir) throws Exception {
 		assertReadsLikeTheFixture(name, dir.resolve("hashed.jfr"),
@@ -71,7 +71,7 @@ class JmcCompatibilityTest {
 
 	@ParameterizedTest
 	@ValueSource(strings = {"jdk9-basic.jfr", "jdk9-weblogic-medrec.jfr", "jdk21-jmc.jfr", "jmc-writer-pooled.jfr",
-			"jrockit-r28-transitions.jfr"})
+			"jrockit-r28-transitions.jfr", "jdk8-guimark.jfr"})
 	void readsRecordingsRedactedLikeThePatientData(String name, @TempDir
 	Path dir) throws Exception {
 		assertReadsLikeTheFixture(name, dir.resolve("patients.jfr"), RedactPatientData.redactor());
@@ -83,7 +83,7 @@ class JmcCompatibilityTest {
 	 */
 	@ParameterizedTest
 	@ValueSource(strings = {"jdk9-basic.jfr", "jdk9-weblogic-medrec.jfr", "jdk21-jmc.jfr", "jmc-writer-pooled.jfr",
-			"jrockit-r28-transitions.jfr"})
+			"jrockit-r28-transitions.jfr", "jdk8-guimark.jfr"})
 	void readsRecordingsRedactedWithSeveralClassNameExpressions(String name, @TempDir
 	Path dir) throws Exception {
 		assertReadsLikeTheFixture(name, dir.resolve("several.jfr"), severalClassNameExpressions());

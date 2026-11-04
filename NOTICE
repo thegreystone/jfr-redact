@@ -17,6 +17,13 @@ under the Universal Permissive License v 1.0:
   jdk9-weblogic-medrec.jfr     wls-medrec-jdk9.jfr
   jdk21-jmc.jfr                jdk21.jfr
 
+The test recording jdk8-guimark.jfr is guimark.jfr from the JMC tutorial,
+https://github.com/thegreystone/jmc-tutorial, a recording of the GUIMark JavaFX
+benchmark on JDK 8u131 on Windows, made by Marcus Hirt, who holds its copyright and
+includes it here under the license of jfr-redact. Its user, host, domain and
+Perforce workspace names were replaced with Alice, HOST01 and alice.host01 using
+the --replace option of jfr-redact.
+
 The test recording jmc-writer-pooled.jfr was generated for jfr-redact with the
 flightrecorder.writer library of the OpenJDK JDK Mission Control project
 (10.0.0-SNAPSHOT), a pure-Java JFR writer that stores thread, class and thread
