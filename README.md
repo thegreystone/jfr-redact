@@ -1,5 +1,12 @@
 # JFR Redact
 
+[![Build](https://github.com/thegreystone/jfr-redact/actions/workflows/build.yml/badge.svg)](https://github.com/thegreystone/jfr-redact/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/thegreystone/jfr-redact)](https://github.com/thegreystone/jfr-redact/releases/latest)
+[![Java 25+](https://img.shields.io/badge/Java-25%2B-blue)](https://adoptium.net/)
+[![JFR 0.9 / 1.0+](https://img.shields.io/badge/JFR-0.9%20%7C%201.0%2B-red)](https://docs.oracle.com/en/java/java-components/jdk-mission-control/)
+[![GraalVM Native](https://img.shields.io/badge/GraalVM-native--image-orange)](https://www.graalvm.org/)
+[![License: BSD-3](https://img.shields.io/badge/License-BSD--3-green)](https://opensource.org/licenses/BSD-3-Clause)
+
 High performance string redaction for JDK Flight Recorder recordings. JFR Redact replaces strings such as thread
 names, class names or personal data everywhere they are stored in a recording, and writes a new recording that JDK
 Mission Control (JMC) reads like the original.
@@ -8,8 +15,10 @@ Supported formats: JFR 0.9 (JDK 7 and 8, JRockit) and JFR 1.0+ with compressed i
 
 ## Quick start
 
-Build with `mvn package` (JDK 25+). Below, `jfr-redact` stands for `java -jar target/jfr-redact-<version>.jar` or the
-native image (see [Building](#building)).
+Download the native image for your platform, or the jar, from the
+[Releases page](https://github.com/thegreystone/jfr-redact/releases/latest), or build with `mvn package` (JDK 25+).
+Below, `jfr-redact` stands for the native image or `java -jar jfr-redact-<version>.jar` (see [Building](#building)).
+The macOS binary is signed and notarized, and the Windows binary is Authenticode-signed.
 
 ```
 jfr-redact redact recording.jfr redacted.jfr
@@ -274,8 +283,7 @@ mvn -Pnative,native-jfr package # Native image with JFR support, see Monitoring
 
 The library requires JDK 25 or later, and the native image GraalVM for JDK 25 or later as `JAVA_HOME`.
 
-Spotless checks the formatting in the `validate` phase: tabs, 120-column code and 100-column comments, with the
-Eclipse profile in `config/formatter/formatting.xml`. Run `mvn spotless:apply` to format the sources.
+For code formatting, continuous integration and cutting a release, see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## License
 

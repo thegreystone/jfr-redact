@@ -1,0 +1,175 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Dry run from the Actions tab: builds everything and keeps it as workflow artifacts, but skips macOS signing and
+  # notarization and creates no release. The artifacts keep the -SNAPSHOT version of the pom.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Jar (platform-independent) ───────────────────────────────────────
+  jar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Set version from tag
+        if: github.event_name == 'push'
+        run: mvn -B versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
+
+      - name: Build jar
+        run: mvn -B package
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: jar
+          path: target/jfr-redact-*.jar
+
+  # ── Native images ────────────────────────────────────────────────────
+  native:
+    strategy:
+      # One platform failing should not cancel the others: a re-run of the failed job alone is cheaper than
+      # rebuilding everything.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            suffix: linux-x86_64
+            exe: ''
+          - os: ubuntu-24.04-arm
+            suffix: linux-aarch64
+            exe: ''
+          - os: macos-latest
+            suffix: macos-aarch64
+            exe: ''
+          - os: windows-latest
+            suffix: windows-x86_64
+            exe: '.exe'
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Set version from tag
+        if: github.event_name == 'push'
+        run: mvn -B versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
+
+      - name: Compute artifact version
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=$(mvn -B -q help:evaluate -Dexpression=project.version -DforceStdout)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build native image
+        run: mvn -B -Pnative package -DskipTests
+
+      - name: Import signing certificate (macOS)
+        if: runner.os == 'macOS' && github.event_name == 'push'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          KEYCHAIN_PWD=$(openssl rand -base64 32)
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      # Signed before the sanity test, so that the test runs the hardened-runtime binary.
+      - name: Sign native binary (macOS)
+        if: runner.os == 'macOS' && github.event_name == 'push'
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          codesign --force --timestamp --options runtime --sign "$MACOS_SIGNING_IDENTITY" target/jfr-redact
+          codesign --verify --strict --verbose=2 target/jfr-redact
+
+      - name: Sanity test native binary
+        run: |
+          BINARY="target/jfr-redact${{ matrix.exe }}"
+          "$BINARY" redact --hash-thread-names src/test/resources/recordings/jdk21-jmc.jfr target/sanity.jfr
+          "$BINARY" scan --validate --top 5 target/sanity.jfr
+
+      - name: Rename binary
+        run: mv "target/jfr-redact${{ matrix.exe }}" "target/jfr-redact-${VERSION}-${{ matrix.suffix }}${{ matrix.exe }}"
+
+      # A bare executable cannot be stapled, so Gatekeeper fetches the ticket online on first launch. Notarizing the
+      # zipped binary is enough for that lookup.
+      - name: Notarize native binary (macOS)
+        if: runner.os == 'macOS' && github.event_name == 'push'
+        env:
+          NOTARIZATION_APPLE_ID: ${{ secrets.NOTARIZATION_APPLE_ID }}
+          NOTARIZATION_PASSWORD: ${{ secrets.NOTARIZATION_PASSWORD }}
+          NOTARIZATION_TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
+        run: |
+          ZIP="$RUNNER_TEMP/notarize.zip"
+          ditto -c -k "target/jfr-redact-${VERSION}-${{ matrix.suffix }}" "$ZIP"
+          xcrun notarytool submit "$ZIP" \
+            --apple-id "$NOTARIZATION_APPLE_ID" \
+            --password "$NOTARIZATION_PASSWORD" \
+            --team-id "$NOTARIZATION_TEAM_ID" \
+            --wait
+
+      - name: Clean up keychain (macOS)
+        if: runner.os == 'macOS' && github.event_name == 'push' && always()
+        run: security delete-keychain "$RUNNER_TEMP/build.keychain" || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: native-${{ matrix.suffix }}
+          path: target/jfr-redact-*-${{ matrix.suffix }}${{ matrix.exe }}
+
+  # ── Create GitHub release with all artifacts ─────────────────────────
+  release:
+    if: github.event_name == 'push'
+    needs: [ jar, native ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*
